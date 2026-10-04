@@ -1,0 +1,50 @@
+source:
+  repo_id: AIGuruTinix/ViBioMIR
+  filename: links_corpus.parquet
+  revision: main
+
+paths:
+  source_dir: data/source
+  source_file: data/source/links_corpus.parquet
+  manifest: data/crawl/crawl_manifest.sqlite
+  corpus_dir: data/crawl/corpus
+  temp_dir: data/crawl/tmp
+  pilots_dir: data/crawl/pilots
+  debug_raw_dir: data/crawl/debug_raw
+  logs_dir: logs
+
+crawler:
+  global_concurrency: 64
+  per_domain_concurrency: 3
+  extraction_workers: 0
+  connect_timeout_seconds: 7
+  total_timeout_seconds: 30
+  max_attempts: 3
+  max_redirects: 10
+  max_html_bytes: 5242880
+  max_pdf_bytes: 26214400
+  user_agent: "ViBioMIRResearchCrawler/1.0 (+https://huggingface.co/datasets/AIGuruTinix/ViBioMIR)"
+  retry_base_seconds: 1.0
+  robots_cache_seconds: 86400
+  robots_timeout_seconds: 10
+  debug_raw_limit: 0
+
+extraction:
+  min_text_chars: 100
+  pdf_min_chars_per_page: 50
+  language_confidence: 0.15
+
+writer:
+  rows_per_shard: 10000
+  max_buffer_bytes: 536870912
+  compression: zstd
+  row_group_size: 2048
+
+queues:
+  fetch: 256
+  extract: 128
+  write: 2048
+  response_byte_budget: 536870912
+
+metrics:
+  interval_seconds: 20

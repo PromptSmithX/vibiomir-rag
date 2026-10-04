@@ -1,0 +1,60 @@
+{
+  "source": "D:\\ROAD_TO_AI_2026\\.windows-test-tmp\\test_inspect_and_pilot_are_rep0\\links.parquet",
+  "source_size_bytes": 2080,
+  "source_mtime_ns": 1791081931103626100,
+  "generated_at": "2026-10-04T02:45:31.113931+00:00",
+  "total_rows": 100,
+  "unique_urls": 100,
+  "duplicate_url_rows": 0,
+  "unique_domains": 10,
+  "pdf_like_urls": 10,
+  "schemes": {
+    "https": 100
+  },
+  "top_domains": [
+    {
+      "domain": "domain-1.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-2.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-3.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-4.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-5.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-6.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-7.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-8.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-9.example",
+      "count": 10
+    },
+    {
+      "domain": "domain-0.example",
+      "count": 10
+    }
+  ],
+  "top_query_parameters": [],
+  "duplicate_url_samples": [],
+  "invalid_url_count": 0,
+  "invalid_url_samples": []
+}

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from urllib.parse import urlsplit
 
 _SPACE = re.compile(r"[ \t\f\v]+")
 _BLANK_LINES = re.compile(r"\n{3,}")
@@ -40,16 +39,4 @@ def looks_like_javascript_shell(html: bytes, text: str) -> bool:
         b"requires javascript",
     )
     return any(marker in lower for marker in markers)
-
-
-def is_bot_challenge_url(url: str | None) -> bool:
-    if not url:
-        return False
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return False
-    return (parsed.hostname or "").lower() == "image.39.net" and parsed.path.rstrip(
-        "/"
-    ).lower() == "/verify.html"
 

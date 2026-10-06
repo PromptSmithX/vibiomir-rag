@@ -40,21 +40,16 @@ class ByteBudget:
 
 
 class DomainLimiter:
-    def __init__(self, concurrency: int, overrides: dict[str, int] | None = None) -> None:
+    def __init__(self, concurrency: int) -> None:
         self.concurrency = concurrency
-        self.overrides = {domain.lower(): limit for domain, limit in (overrides or {}).items()}
-        if any(limit < 1 for limit in self.overrides.values()):
-            raise ValueError("domain concurrency overrides must be positive")
-        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._semaphores: dict[str, asyncio.Semaphore] = defaultdict(
+            lambda: asyncio.Semaphore(concurrency)
+        )
         self._last_request: dict[str, float] = {}
         self._delay_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     def semaphore(self, domain: str) -> asyncio.Semaphore:
-        normalized = domain.lower()
-        if normalized not in self._semaphores:
-            limit = self.overrides.get(normalized, self.concurrency)
-            self._semaphores[normalized] = asyncio.Semaphore(limit)
-        return self._semaphores[normalized]
+        return self._semaphores[domain]
 
     async def respect_delay(self, domain: str, delay: float | None) -> None:
         if not delay:
@@ -100,13 +95,12 @@ class Fetcher:
         self,
         config: CrawlerRuntimeConfig,
         response_budget: ByteBudget,
-        domain_concurrency_overrides: dict[str, int] | None = None,
     ) -> None:
         self.config = config
         self.response_budget = response_budget
         self.session = None
         self.robots: RobotsCache | None = None
-        self.limiter = DomainLimiter(config.per_domain_concurrency, domain_concurrency_overrides)
+        self.limiter = DomainLimiter(config.per_domain_concurrency)
         self._domain_cooldown_until: dict[str, float] = {}
 
     async def __aenter__(self) -> Fetcher:
@@ -146,14 +140,6 @@ class Fetcher:
         return time.time() + base + random.uniform(0, base * 0.25)
 
     async def fetch(self, target: FetchTarget) -> tuple[FetchOutcome, int]:
-        active_seconds = [0.0]
-        outcome, reserved = await self._fetch_impl(target, active_seconds)
-        outcome.fetch_seconds = active_seconds[0]
-        return outcome, reserved
-
-    async def _fetch_impl(
-        self, target: FetchTarget, active_seconds: list[float]
-    ) -> tuple[FetchOutcome, int]:
         try:
             import aiohttp
         except ImportError as exc:  # pragma: no cover
@@ -182,7 +168,6 @@ class Fetcher:
                 cooldown = self._domain_cooldown_until.get(domain, 0.0) - time.time()
                 if cooldown > 0:
                     await asyncio.sleep(cooldown)
-                robots_started = time.monotonic()
                 try:
                     allowed, crawl_delay = await self.robots.allowed(current_url)
                 except RobotsUnavailable as exc:
@@ -198,8 +183,6 @@ class Fetcher:
                         ),
                         reserved,
                     )
-                finally:
-                    active_seconds[0] += time.monotonic() - robots_started
                 if not allowed:
                     return (
                         FetchOutcome(
@@ -214,7 +197,6 @@ class Fetcher:
 
                 await self.limiter.respect_delay(domain, crawl_delay)
                 async with self.limiter.semaphore(domain):
-                    request_started = time.monotonic()
                     try:
                         response = await self.session.get(current_url, allow_redirects=False)
                     except (aiohttp.ClientError, TimeoutError) as exc:
@@ -230,8 +212,6 @@ class Fetcher:
                             ),
                             reserved,
                         )
-                    finally:
-                        active_seconds[0] += time.monotonic() - request_started
                     async with response:
                         status = response.status
                         if status in REDIRECT_STATUSES:
@@ -284,11 +264,7 @@ class Fetcher:
                                 reserved,
                             )
 
-                        read_started = time.monotonic()
-                        try:
-                            prefix = await response.content.read(8192)
-                        finally:
-                            active_seconds[0] += time.monotonic() - read_started
+                        prefix = await response.content.read(8192)
                         kind = _content_type(response.headers.get("Content-Type"), prefix)
                         if kind == "application/pdf":
                             limit = self.config.max_pdf_bytes
@@ -343,27 +319,23 @@ class Fetcher:
                                 ),
                                 reserved,
                             )
-                        body_started = time.monotonic()
-                        try:
-                            async for chunk in response.content.iter_chunked(64 * 1024):
-                                downloaded += len(chunk)
-                                if downloaded > limit:
-                                    return (
-                                        FetchOutcome(
-                                            target,
-                                            CrawlStatus.TOO_LARGE,
-                                            final_url=current_url,
-                                            content_type=kind,
-                                            http_status=status,
-                                            bytes_downloaded=downloaded,
-                                            error_type="RESPONSE_SIZE_LIMIT",
-                                            error=f"response exceeds {limit} bytes",
-                                        ),
-                                        reserved,
-                                    )
-                                chunks.append(chunk)
-                        finally:
-                            active_seconds[0] += time.monotonic() - body_started
+                        async for chunk in response.content.iter_chunked(64 * 1024):
+                            downloaded += len(chunk)
+                            if downloaded > limit:
+                                return (
+                                    FetchOutcome(
+                                        target,
+                                        CrawlStatus.TOO_LARGE,
+                                        final_url=current_url,
+                                        content_type=kind,
+                                        http_status=status,
+                                        bytes_downloaded=downloaded,
+                                        error_type="RESPONSE_SIZE_LIMIT",
+                                        error=f"response exceeds {limit} bytes",
+                                    ),
+                                    reserved,
+                                )
+                            chunks.append(chunk)
                         return (
                             FetchOutcome(
                                 target,

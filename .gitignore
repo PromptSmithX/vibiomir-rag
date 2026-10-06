@@ -13,3 +13,8 @@ data/crawl/*
 !data/crawl/.gitkeep
 logs/*
 !logs/.gitkeep
+
+dist/
+partitions/
+partitions_v2/
+kaggle_outputs/

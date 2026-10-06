@@ -29,7 +29,6 @@ class Manifest:
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA busy_timeout=60000")
         self._claim_domains: deque[str] | None = None
-        self._claim_excluded_domains: frozenset[str] | None = None
 
     def close(self) -> None:
         self.connection.close()
@@ -229,23 +228,18 @@ class Manifest:
                 )
             return len(keys)
 
-    def claim_targets(
-        self, limit: int, excluded_domains: frozenset[str] | None = None
-    ) -> list[FetchTarget]:
+    def claim_targets(self, limit: int) -> list[FetchTarget]:
         if limit <= 0:
             return []
-        excluded = excluded_domains or frozenset()
         now = time.time()
         with self.transaction():
-            if self._claim_domains is None or self._claim_excluded_domains != excluded:
+            if self._claim_domains is None:
                 self._claim_domains = deque(
                     row[0]
                     for row in self.connection.execute(
                         "SELECT DISTINCT domain FROM fetch_targets ORDER BY domain"
                     )
-                    if row[0] not in excluded
                 )
-                self._claim_excluded_domains = excluded
             if not self._claim_domains:
                 return []
 
@@ -500,47 +494,21 @@ class Manifest:
             ).fetchone()[0]
         )
 
-    @staticmethod
-    def _domain_exclusion_clause(excluded_domains: frozenset[str]) -> tuple[str, tuple[str, ...]]:
-        if not excluded_domains:
-            return "", ()
-        placeholders = ",".join("?" for _ in excluded_domains)
-        return f" AND domain NOT IN ({placeholders})", tuple(sorted(excluded_domains))
-
-    def unfinished_count(self, excluded_domains: frozenset[str] | None = None) -> int:
-        clause, parameters = self._domain_exclusion_clause(excluded_domains or frozenset())
+    def unfinished_count(self) -> int:
         return int(
             self.connection.execute(
-                f"""
+                """
                 SELECT COUNT(*) FROM fetch_targets
                 WHERE status IN ('PENDING', 'FETCHING', 'RETRY_WAIT')
-                {clause}
-                """,
-                parameters,
+                """
             ).fetchone()[0]
         )
 
-    def next_retry_delay(self, excluded_domains: frozenset[str] | None = None) -> float | None:
-        clause, parameters = self._domain_exclusion_clause(excluded_domains or frozenset())
+    def next_retry_delay(self) -> float | None:
         value = self.connection.execute(
-            f"""SELECT MIN(next_retry_at) FROM fetch_targets
-            WHERE status='RETRY_WAIT'{clause}""",
-            parameters,
+            "SELECT MIN(next_retry_at) FROM fetch_targets WHERE status='RETRY_WAIT'"
         ).fetchone()[0]
         return max(0.0, float(value) - time.time()) if value is not None else None
-
-    def domain_task_counts(self, domains: frozenset[str]) -> dict[str, int]:
-        if not domains:
-            return {}
-        placeholders = ",".join("?" for _ in domains)
-        return {
-            str(row["domain"]): int(row["count"])
-            for row in self.connection.execute(
-                f"""SELECT domain, COUNT(*) AS count FROM crawl_tasks
-                WHERE domain IN ({placeholders}) GROUP BY domain ORDER BY domain""",
-                tuple(sorted(domains)),
-            )
-        }
 
     def task_rows(self) -> Iterable[sqlite3.Row]:
         return self.connection.execute("SELECT * FROM crawl_tasks ORDER BY doc_id")

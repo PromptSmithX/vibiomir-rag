@@ -9,16 +9,16 @@ from crawler.pipeline import CrawlPipeline
 class BufferedManifest:
     """A terminal result is buffered while SQLite still reports FETCHING."""
 
-    def claim_targets(self, _limit, _excluded_domains=frozenset()):
+    def claim_targets(self, _limit):
         return []
 
     def active_count(self):
         raise AssertionError("coordinator must not wait on persisted FETCHING state")
 
-    def unfinished_count(self, _excluded_domains=frozenset()):
+    def unfinished_count(self):
         return 1
 
-    def next_retry_delay(self, _excluded_domains=frozenset()):
+    def next_retry_delay(self):
         return None
 
 
@@ -37,7 +37,6 @@ async def test_coordinator_flushes_when_only_writer_buffer_remains() -> None:
     pipeline.extraction_workers = 0
     pipeline.in_flight = 0
     pipeline.progress = None
-    pipeline.deferred_domains = frozenset()
 
     async def writer():
         item = await pipeline.write_queue.get()

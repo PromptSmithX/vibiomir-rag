@@ -11,13 +11,7 @@ from pathlib import Path
 
 
 class Metrics:
-    def __init__(
-        self,
-        logs_dir: Path,
-        interval_seconds: float,
-        corpus_dir: Path,
-        fetch_timing_path: Path | None = None,
-    ) -> None:
+    def __init__(self, logs_dir: Path, interval_seconds: float, corpus_dir: Path) -> None:
         self.started = time.monotonic()
         self.interval_seconds = interval_seconds
         self.processed = 0
@@ -29,9 +23,6 @@ class Metrics:
         self.domain_latency_total: dict[str, float] = defaultdict(float)
         self.domain_latency_count: Counter[str] = Counter()
         self.corpus_dir = corpus_dir
-        self.fetch_timing_path = fetch_timing_path
-        if self.fetch_timing_path is not None:
-            self.fetch_timing_path.parent.mkdir(parents=True, exist_ok=True)
         run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         self.path = logs_dir / "metrics" / f"run-{run_id}-{os.getpid()}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,31 +39,9 @@ class Metrics:
         if status != "SUCCESS":
             self.domain_errors[domain] += 1
 
-    def record_fetch(
-        self,
-        domain: str,
-        elapsed_seconds: float,
-        *,
-        fetch_key: str | None = None,
-        attempt: int | None = None,
-        status: str | None = None,
-        retryable: bool | None = None,
-    ) -> None:
+    def record_fetch(self, domain: str, elapsed_seconds: float) -> None:
         self.domain_latency_total[domain] += elapsed_seconds
         self.domain_latency_count[domain] += 1
-        if self.fetch_timing_path is None:
-            return
-        payload = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "fetch_key": fetch_key,
-            "domain": domain,
-            "attempt": attempt,
-            "status": status,
-            "retryable": retryable,
-            "elapsed_seconds": round(elapsed_seconds, 6),
-        }
-        with self.fetch_timing_path.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def snapshot(self, manifest_counts: dict[str, int]) -> dict[str, object]:
         elapsed = max(0.001, time.monotonic() - self.started)

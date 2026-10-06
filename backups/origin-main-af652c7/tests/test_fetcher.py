@@ -1,4 +1,3 @@
-import asyncio
 import time
 
 import pytest
@@ -99,34 +98,6 @@ async def test_fetcher_stops_oversized_response() -> None:
             outcome, reserved = await fetcher.fetch(target)
             assert outcome.status == CrawlStatus.TOO_LARGE
             if reserved:
-                await budget.release(reserved)
-    finally:
-        await runner.cleanup()
-
-
-@pytest.mark.asyncio
-async def test_fetch_seconds_excludes_domain_semaphore_wait() -> None:
-    async def handler(_request):
-        await asyncio.sleep(0.15)
-        return web.Response(text="<html><main><p>timed article</p></main></html>")
-
-    runner, base = await start_server(handler)
-    budget = ByteBudget(4096)
-    try:
-        async with Fetcher(
-            runtime_config(per_domain_concurrency=2),
-            budget,
-            {"127.0.0.1": 1},
-        ) as fetcher:
-            targets = [
-                FetchTarget(f"key-{index}", f"{base}/{index}", "127.0.0.1", 1) for index in range(2)
-            ]
-            started = time.monotonic()
-            results = await asyncio.gather(*(fetcher.fetch(target) for target in targets))
-            wall_seconds = time.monotonic() - started
-            for outcome, reserved in results:
-                assert outcome.status == CrawlStatus.SUCCESS
-                assert 0.1 <= outcome.fetch_seconds < wall_seconds * 0.8
                 await budget.release(reserved)
     finally:
         await runner.cleanup()

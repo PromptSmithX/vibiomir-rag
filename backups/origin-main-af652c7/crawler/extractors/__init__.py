@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from crawler.cleaner import (
-    clean_text,
-    is_bot_challenge_url,
-    looks_like_javascript_shell,
-    normalize_for_hash,
-)
+from crawler.cleaner import clean_text, looks_like_javascript_shell, normalize_for_hash
 from crawler.language import detect_language
 from crawler.models import CrawlStatus, ExtractedContent, FetchOutcome
 from crawler.utils.hashing import sha256_text
@@ -40,14 +35,7 @@ def extract_fetch_outcome(outcome: FetchOutcome, settings: dict[str, Any]) -> Ex
 
         title = clean_text(title)
         text = clean_text(text)
-        error_type = None
-        error = None
-        if status == CrawlStatus.SUCCESS and is_bot_challenge_url(outcome.final_url):
-            status = CrawlStatus.NEEDS_JS
-            text = ""
-            error_type = "BOT_CHALLENGE"
-            error = "Bot verification challenge at final URL"
-        elif status == CrawlStatus.SUCCESS and len(text) < int(settings["min_text_chars"]):
+        if status == CrawlStatus.SUCCESS and len(text) < int(settings["min_text_chars"]):
             status = (
                 CrawlStatus.NEEDS_JS
                 if looks_like_javascript_shell(content, text)
@@ -67,8 +55,6 @@ def extract_fetch_outcome(outcome: FetchOutcome, settings: dict[str, Any]) -> Ex
             language=language,
             content_hash=content_hash,
             extractor=extractor,
-            error_type=error_type,
-            error=error,
         )
     except Exception as exc:
         return ExtractedContent(

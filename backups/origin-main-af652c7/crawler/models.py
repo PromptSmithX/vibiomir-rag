@@ -52,7 +52,6 @@ class FetchOutcome:
     retry_at: float | None = None
     error_type: str | None = None
     error: str | None = None
-    fetch_seconds: float = 0.0
 
 
 @dataclass(slots=True)
@@ -110,3 +109,4 @@ class DocumentBatch:
         return sum(
             len(record.text.encode("utf-8")) if record.text else 0 for record in self.records
         )
+

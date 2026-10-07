@@ -6,16 +6,11 @@ The design follows `ViBioMIR_Crawl_Pipeline_Spec.md`: source IDs are preserved,
 clean documents are stored in ZSTD-compressed Parquet shards, and SQLite is the
 source of truth for crawl state.
 
-For the six-worker Windows + Kaggle CPU rollout, see
-[`KAGGLE_CRAWL_GUIDE.md`](KAGGLE_CRAWL_GUIDE.md). The crawler's extraction and
-persistence pipeline is reused by each worker.
-
 ## Setup
 
-The local production target is Windows x86-64 with Python 3.13. Paths,
+The supported production target is Windows x86-64 with Python 3.13. Paths,
 process locking, graceful Ctrl+C handling, process workers, SQLite recovery,
-and atomic Parquet writes all have Windows-specific handling. The Kaggle CPU
-wrapper uses the same pipeline on Python 3.12 or 3.13.
+and atomic Parquet writes all have Windows-specific handling.
 
 ```powershell
 $env:UV_CACHE_DIR = "$PWD\.uv-cache"
@@ -122,29 +117,6 @@ uv run python -m crawler manifest init
 
 The initializer is idempotent. Existing `doc_id` rows retain their state. A
 source row that reuses an existing `doc_id` with a different URL is rejected.
-
-## Build a measured domain profile
-
-Before producing workload-balanced partitions, create the deterministic
-calibration selection and run it with per-attempt fetch timing enabled:
-
-```powershell
-uv run python build_domain_profile.py sample `
-  --input data/source/links_corpus.parquet `
-  --output data/crawl/pilots/domain-profile-calibration-v1.jsonl
-uv run python -m crawler --run-name domain-profile-calibration-v4 manifest init `
-  --selection data/crawl/pilots/domain-profile-calibration-v1.jsonl
-uv run python -m crawler --run-name domain-profile-calibration-v4 crawl run `
-  --capture-fetch-timings --progress off
-```
-
-The complete profile and partition v2 commands are documented in
-[`KAGGLE_CRAWL_GUIDE.md`](KAGGLE_CRAWL_GUIDE.md). The profile uses terminal
-status rates and measured median/p95 fetch times; split domains receive a
-cross-worker concurrency cap of two.
-
-The Kaggle notebook supports `MAX_DOCS = 1000` for a bounded smoke test. Set
-it to `None` for a full run or to resume the remaining worker partition.
 
 ## Tests
 

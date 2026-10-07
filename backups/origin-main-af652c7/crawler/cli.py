@@ -6,7 +6,6 @@ import json
 import sys
 from pathlib import Path
 
-from crawler.assignment import validate_worker_partition
 from crawler.config import AppConfig, apply_run_name, load_config
 from crawler.manifest import Manifest
 from crawler.pipeline import CrawlPipeline, RunLock
@@ -79,31 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
     manifest_init = manifest_commands.add_parser("init")
     manifest_init.add_argument("--source-path")
     manifest_init.add_argument("--selection", help="pilot JSONL; omit to import all rows")
-    manifest_init.add_argument(
-        "--skip-source-analysis",
-        action="store_true",
-        help="use a prevalidated partition without replacing the shared source analysis",
-    )
 
     crawl = commands.add_parser("crawl", help="run or inspect the crawler")
     crawl_commands = crawl.add_subparsers(dest="crawl_command", required=True)
     crawl_run = crawl_commands.add_parser("run")
     crawl_run.add_argument("--target-limit", type=int)
     crawl_run.add_argument("--progress", choices=PROGRESS_MODES, default="auto")
-    crawl_run.add_argument(
-        "--capture-fetch-timings",
-        action="store_true",
-        help="append per-attempt fetch timings to the run logs directory",
-    )
-    crawl_run.add_argument("--domain-assignment", type=Path)
-    crawl_run.add_argument("--worker-id", type=int)
-    crawl_run.add_argument(
-        "--defer-domain",
-        action="append",
-        default=[],
-        metavar="DOMAIN",
-        help="leave this domain pending during the current run; may be repeated",
-    )
     crawl_commands.add_parser("status")
 
     corpus = commands.add_parser("corpus", help="verify persistent output")
@@ -151,8 +131,7 @@ def execute(args: argparse.Namespace, config: AppConfig) -> int:
 
     if args.command == "manifest" and args.manifest_command == "init":
         source_path = _source_path(config, args.source_path)
-        if not args.skip_source_analysis:
-            _ensure_source_analysis(config, source_path)
+        _ensure_source_analysis(config, source_path)
         selection = pilot_ids(Path(args.selection).resolve()) if args.selection else None
         config.ensure_directories()
         with Manifest(config.paths.manifest) as manifest:
@@ -167,59 +146,15 @@ def execute(args: argparse.Namespace, config: AppConfig) -> int:
 
     if args.command == "crawl" and args.crawl_command == "run":
         config.ensure_directories()
-        deferred_domains = frozenset(
-            domain.strip().lower().rstrip(".") for domain in args.defer_domain if domain.strip()
-        )
-        if len(deferred_domains) != len(args.defer_domain):
-            raise ValueError("--defer-domain values must be non-empty and unique")
-        if any("://" in domain or "/" in domain for domain in deferred_domains):
-            raise ValueError("--defer-domain expects a hostname, not a URL")
-        if (args.domain_assignment is None) != (args.worker_id is None):
-            raise ValueError("--domain-assignment and --worker-id must be provided together")
-        domain_concurrency_overrides: dict[str, int] = {}
-        if args.domain_assignment is not None:
-            suffix = "local" if args.worker_id == 0 else "kaggle"
-            partition_file = (
-                args.domain_assignment.resolve().parent
-                / f"worker_{args.worker_id}_{suffix}.parquet"
-            )
-            _rows, domain_concurrency_overrides = validate_worker_partition(
-                partition_file,
-                args.domain_assignment.resolve(),
-                args.worker_id,
-            )
         lock_path = config.paths.manifest.with_suffix(".lock")
         with RunLock(lock_path), Manifest(config.paths.manifest) as manifest:
             manifest.create_schema()
             if manifest.counts().get("TOTAL", 0) == 0:
                 raise RuntimeError("manifest is empty; run `manifest init` first")
-            timing_path = (
-                config.paths.logs_dir / "fetch_timings.jsonl"
-                if args.capture_fetch_timings
-                else None
-            )
             counts = asyncio.run(
-                CrawlPipeline(
-                    config,
-                    manifest,
-                    args.progress,
-                    fetch_timing_path=timing_path,
-                    domain_concurrency_overrides=domain_concurrency_overrides,
-                    deferred_domains=deferred_domains,
-                ).run(args.target_limit)
+                CrawlPipeline(config, manifest, args.progress).run(args.target_limit)
             )
-            if deferred_domains:
-                deferred_counts = manifest.domain_task_counts(deferred_domains)
-                _print(
-                    {
-                        "status_counts": counts,
-                        "deferred_domains": sorted(deferred_domains),
-                        "deferred_url_count": sum(deferred_counts.values()),
-                        "deferred_url_count_by_domain": deferred_counts,
-                    }
-                )
-            else:
-                _print(counts)
+            _print(counts)
         return 0
 
     if args.command == "corpus" and args.corpus_command == "verify":

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 import signal
-from collections.abc import Callable
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import FrameType
@@ -78,14 +78,7 @@ def _extraction_settings(config: AppConfig) -> dict[str, Any]:
 
 class CrawlPipeline:
     def __init__(
-        self,
-        config: AppConfig,
-        manifest: Manifest,
-        progress_mode: str = "auto",
-        on_shard_commit: Callable[[int, int], None] | None = None,
-        fetch_timing_path: Path | None = None,
-        domain_concurrency_overrides: dict[str, int] | None = None,
-        deferred_domains: set[str] | frozenset[str] | None = None,
+        self, config: AppConfig, manifest: Manifest, progress_mode: str = "auto"
     ) -> None:
         self.config = config
         self.manifest = manifest
@@ -95,7 +88,6 @@ class CrawlPipeline:
             config.paths.logs_dir,
             config.metrics.interval_seconds,
             config.paths.corpus_dir,
-            fetch_timing_path,
         )
         self.byte_budget = ByteBudget(config.queues.response_byte_budget)
         self.fetch_queue: asyncio.Queue = asyncio.Queue(maxsize=config.queues.fetch)
@@ -109,12 +101,8 @@ class CrawlPipeline:
         self.pool = ProcessPoolExecutor(max_workers=self.extraction_workers)
         self.debug_raw_written = 0
         self.progress_mode = progress_mode
-        self.on_shard_commit = on_shard_commit
-        self.domain_concurrency_overrides = domain_concurrency_overrides or {}
-        self.deferred_domains = frozenset(deferred_domains or ())
         self.progress: CrawlProgress | None = None
         self.in_flight = 0
-        self.target_limit_reached = False
 
     def request_stop(self) -> None:
         LOGGER.warning("graceful shutdown requested; no new targets will be scheduled")
@@ -144,28 +132,23 @@ class CrawlPipeline:
                     pass
 
     async def run(self, target_limit: int | None = None) -> dict[str, int]:
-        self.target_limit_reached = False
         self._install_signal_handlers()
-        writer = ParquetShardWriter(
-            self.config,
-            self.manifest,
-            on_commit=self.on_shard_commit,
-        )
+        writer = ParquetShardWriter(self.config, self.manifest)
         recovery = writer.recover()
         LOGGER.info("startup recovery: %s", recovery)
 
-        unfinished = self.manifest.unfinished_count(self.deferred_domains)
+        unfinished = self.manifest.unfinished_count()
         total = min(unfinished, target_limit) if target_limit is not None else unfinished
-        self.progress = CrawlProgress(self.progress_mode, total, self.config.crawler.max_attempts)
+        self.progress = CrawlProgress(
+            self.progress_mode, total, self.config.crawler.max_attempts
+        )
         try:
             with self.progress:
-                async with Fetcher(
-                    self.config.crawler,
-                    self.byte_budget,
-                    self.domain_concurrency_overrides,
-                ) as fetcher:
+                async with Fetcher(self.config.crawler, self.byte_budget) as fetcher:
                     async with asyncio.TaskGroup() as group:
-                        writer_task = group.create_task(writer.run(self.write_queue), name="writer")
+                        writer_task = group.create_task(
+                            writer.run(self.write_queue), name="writer"
+                        )
                         group.create_task(
                             self.metrics.periodic(self.manifest, self.metrics_stop),
                             name="metrics",
@@ -175,7 +158,9 @@ class CrawlPipeline:
                                 self._fetch_worker(fetcher), name=f"fetch-{index:03d}"
                             )
                         for index in range(self.extraction_workers):
-                            group.create_task(self._extract_worker(), name=f"extract-{index:02d}")
+                            group.create_task(
+                                self._extract_worker(), name=f"extract-{index:02d}"
+                            )
                         group.create_task(
                             self._coordinate(writer_task, target_limit), name="coordinator"
                         )
@@ -188,12 +173,13 @@ class CrawlPipeline:
         batch_size = max(1, min(self.config.queues.fetch, 256))
         while not self.stop_requested.is_set():
             if target_limit is not None and dispatched >= target_limit:
-                self.target_limit_reached = True
                 break
             remaining = (
-                batch_size if target_limit is None else min(batch_size, target_limit - dispatched)
+                batch_size
+                if target_limit is None
+                else min(batch_size, target_limit - dispatched)
             )
-            targets = self.manifest.claim_targets(remaining, self.deferred_domains)
+            targets = self.manifest.claim_targets(remaining)
             if targets:
                 self.in_flight += len(targets)
                 for target in targets:
@@ -204,7 +190,7 @@ class CrawlPipeline:
             if self.in_flight > 0:
                 await asyncio.sleep(0.2)
                 continue
-            delay = self.manifest.next_retry_delay(self.deferred_domains)
+            delay = self.manifest.next_retry_delay()
             if delay is None:
                 break
             try:
@@ -241,15 +227,9 @@ class CrawlPipeline:
                     return
                 if self.progress is not None:
                     self.progress.target_started(target)
+                started = time.monotonic()
                 outcome, reserved = await fetcher.fetch(target)
-                self.metrics.record_fetch(
-                    target.domain,
-                    outcome.fetch_seconds,
-                    fetch_key=target.fetch_key,
-                    attempt=target.attempts,
-                    status=outcome.status.value,
-                    retryable=outcome.retryable,
-                )
+                self.metrics.record_fetch(target.domain, time.monotonic() - started)
                 if outcome.retryable and target.attempts < self.config.crawler.max_attempts:
                     if reserved:
                         await self.byte_budget.release(reserved)

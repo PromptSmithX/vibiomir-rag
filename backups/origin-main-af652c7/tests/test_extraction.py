@@ -56,28 +56,6 @@ def test_javascript_shell_is_classified() -> None:
     assert result.status == CrawlStatus.NEEDS_JS
 
 
-def test_39_net_verification_redirect_is_classified_as_bot_challenge() -> None:
-    html = """<html><head><title>39健康</title></head><body></body></html>""".encode()
-    outcome = FetchOutcome(
-        FetchTarget("key", "https://ask.39.net/question/1.html", "ask.39.net", 1),
-        CrawlStatus.SUCCESS,
-        final_url="https://image.39.net/verify.html?referer=https%3A%2F%2Fask.39.net",
-        content_type="text/html",
-        content=html,
-        http_status=200,
-        bytes_downloaded=len(html),
-    )
-
-    result = extract_fetch_outcome(
-        outcome,
-        {"min_text_chars": 20, "pdf_min_chars_per_page": 50, "language_confidence": 0.15},
-    )
-
-    assert result.status == CrawlStatus.NEEDS_JS
-    assert result.error_type == "BOT_CHALLENGE"
-    assert result.text is None
-
-
 def test_html_extraction_removes_structural_related_and_share_blocks() -> None:
     html = b"""
     <html><head><title>Article title</title></head><body>

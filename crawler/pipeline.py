@@ -86,9 +86,11 @@ class CrawlPipeline:
         fetch_timing_path: Path | None = None,
         domain_concurrency_overrides: dict[str, int] | None = None,
         deferred_domains: set[str] | frozenset[str] | None = None,
+        recover_adapters: bool = True,
     ) -> None:
         self.config = config
         self.manifest = manifest
+        self.recover_adapters = recover_adapters
         self.stop_requested = asyncio.Event()
         self.metrics_stop = asyncio.Event()
         self.metrics = Metrics(
@@ -151,7 +153,7 @@ class CrawlPipeline:
             self.manifest,
             on_commit=self.on_shard_commit,
         )
-        recovery = writer.recover()
+        recovery = writer.recover(recover_adapters=self.recover_adapters)
         LOGGER.info("startup recovery: %s", recovery)
 
         unfinished = self.manifest.unfinished_count(self.deferred_domains)

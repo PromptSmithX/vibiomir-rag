@@ -56,7 +56,11 @@ class ParquetShardWriter:
         self.records: list[DocumentRecord] = []
         self.buffer_bytes = 0
 
-    def recover(self) -> dict[str, int]:
+    def recover(
+        self,
+        recover_adapters: bool = True,
+        recover_network_errors: bool = True,
+    ) -> dict[str, int]:
         _, pq = _arrow_modules()
         committed = 0
         reset = 0
@@ -85,6 +89,13 @@ class ParquetShardWriter:
                 self.manifest.abort_staged_shard(shard_name)
                 reset += 1
         reset += self.manifest.recover_unstaged_fetches()
+        if recover_adapters:
+            from crawler.adapters import get_all_adapters
+
+            adapter_resets = self.manifest.recover_adapter_targets(get_all_adapters())
+            reset += sum(adapter_resets.values())
+        if recover_network_errors:
+            reset += self.manifest.recover_transient_network_errors()
         return {"committed_shards": committed, "reset_targets": reset}
 
     async def run(self, queue) -> None:

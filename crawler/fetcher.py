@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from urllib.parse import urljoin
 
+from crawler.adapters import get_adapter
 from crawler.config import CrawlerRuntimeConfig
 from crawler.models import CrawlStatus, FetchOutcome, FetchTarget
 from crawler.robots import RobotsCache, RobotsUnavailable
@@ -162,6 +163,13 @@ class Fetcher:
             raise RuntimeError("Fetcher must be used as an async context manager")
 
         current_url = target.request_url
+        domain = domain_from_url(current_url)
+        adapter = get_adapter(domain)
+        request_headers = None
+        if adapter is not None:
+            current_url, request_headers = adapter.adapt_request(current_url)
+            domain = domain_from_url(current_url)
+
         reserved = 0
         try:
             for _redirect in range(self.config.max_redirects + 1):
@@ -175,6 +183,24 @@ class Fetcher:
                             final_url=current_url,
                             error_type="INVALID_URL",
                             error=str(exc),
+                        ),
+                        reserved,
+                    )
+                if adapter is not None and adapter.is_bot_challenge(current_url, None):
+                    retry_at = self.backoff_time(target.attempts)
+                    domain = domain_from_url(current_url)
+                    self._domain_cooldown_until[domain] = max(
+                        self._domain_cooldown_until.get(domain, 0.0), retry_at
+                    )
+                    return (
+                        FetchOutcome(
+                            target,
+                            CrawlStatus.FAILED,
+                            final_url=current_url,
+                            retryable=True,
+                            retry_at=retry_at,
+                            error_type="BOT_CHALLENGE",
+                            error="Bot verification challenge at final URL",
                         ),
                         reserved,
                     )
@@ -216,7 +242,9 @@ class Fetcher:
                 async with self.limiter.semaphore(domain):
                     request_started = time.monotonic()
                     try:
-                        response = await self.session.get(current_url, allow_redirects=False)
+                        response = await self.session.get(
+                            current_url, headers=request_headers, allow_redirects=False
+                        )
                     except (aiohttp.ClientError, TimeoutError) as exc:
                         return (
                             FetchOutcome(
@@ -249,6 +277,13 @@ class Fetcher:
                                     reserved,
                                 )
                             current_url = urljoin(current_url, location)
+                            domain = domain_from_url(current_url)
+                            adapter = get_adapter(domain)
+                            if adapter is not None:
+                                current_url, request_headers = adapter.adapt_request(current_url)
+                                domain = domain_from_url(current_url)
+                            else:
+                                request_headers = None
                             continue
                         if status in RETRYABLE_STATUSES:
                             retry_at = _retry_after(response.headers.get("Retry-After")) or (

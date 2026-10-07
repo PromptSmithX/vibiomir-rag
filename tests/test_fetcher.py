@@ -130,3 +130,4 @@ async def test_fetch_seconds_excludes_domain_semaphore_wait() -> None:
                 await budget.release(reserved)
     finally:
         await runner.cleanup()
+

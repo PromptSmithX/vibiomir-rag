@@ -141,3 +141,60 @@ def test_html_extraction_accepts_attributes_without_values() -> None:
     assert result.error is None
     assert "10 mg" in result.text
     assert "also valid content" in result.text
+
+
+def test_ask_39_extractor_desktop() -> None:
+    html = (
+        "<html><head><title>慢性咽炎_39问医生</title></head><body>"
+        '<h1 class="ask_tit">慢性咽炎会导致scc升高吗</h1>'
+        '<div class="ask_cont"><p class="txt_ms">病情描述：咽喉不适</p></div>'
+        '<div class="txt_label"><a>咽喉科</a><a>慢性咽炎</a></div>'
+        '<p class="sele_txt">慢性咽炎一般不会导致scc升高，建议定期复查并配合治疗。</p>'
+        "</body></html>"
+    ).encode()
+    outcome = FetchOutcome(
+        FetchTarget("key", "https://ask.39.net/question/1.html", "ask.39.net", 1),
+        CrawlStatus.SUCCESS,
+        final_url="https://ask.39.net/question/1.html",
+        content_type="text/html",
+        content=html,
+        http_status=200,
+        bytes_downloaded=len(html),
+    )
+    result = extract_fetch_outcome(
+        outcome,
+        {"min_text_chars": 20, "pdf_min_chars_per_page": 50, "language_confidence": 0.15},
+    )
+    assert result.status == CrawlStatus.SUCCESS
+    assert result.extractor == "domain:ask.39.net"
+    assert "慢性咽炎" in (result.title or "")
+    assert "建议定期复查" in (result.text or "")
+
+
+def test_ask_39_extractor_mobile() -> None:
+    html = (
+        '<html><head><meta itemprop="name" content="咽炎咬牙"/></head><body>'
+        '<h1 class="title">咽炎咬牙怎么办</h1>'
+        '<div class="doctor-info"><span class="doctor-name">李医生</span></div>'
+        '<div class="pJingbianContent">请注意保持口腔清洁，多喝温水，可以适量服用药物。</div>'
+        "</body></html>"
+    ).encode()
+    outcome = FetchOutcome(
+        FetchTarget("key", "https://ask.39.net/question/2.html", "ask.39.net", 1),
+        CrawlStatus.SUCCESS,
+        final_url="https://wapask.39.net/question/2.html",
+        content_type="text/html",
+        content=html,
+        http_status=200,
+        bytes_downloaded=len(html),
+    )
+    result = extract_fetch_outcome(
+        outcome,
+        {"min_text_chars": 20, "pdf_min_chars_per_page": 50, "language_confidence": 0.15},
+    )
+    assert result.status == CrawlStatus.SUCCESS
+    assert result.extractor == "domain:wapask.39.net"
+    assert "咽炎" in (result.title or "")
+    assert "李医生" in (result.text or "")
+    assert "保持口腔清洁" in (result.text or "")
+

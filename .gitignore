@@ -18,3 +18,8 @@ dist/
 partitions/
 partitions_v2/
 kaggle_outputs/
+
+# Test caches & temp artifacts
+.pytest-agent-cache*/
+.pytest-agent-tmp*/
+.windows-test-tmp/

@@ -11,6 +11,10 @@ data/source/*
 !data/source/.gitkeep
 data/crawl/*
 !data/crawl/.gitkeep
+data/clean/*
+!data/clean/.gitkeep
+data/retrieval/*
+!data/retrieval/.gitkeep
 logs/*
 !logs/.gitkeep
 

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from crawler.extractors.domains.ask_39_net import extract_ask_39
 from crawler.extractors.domains.baothanhhoa_vn import extract_baothanhhoa
 from crawler.extractors.domains.baoquangtri_vn import extract_baoquangtri
+from crawler.extractors.domains.qdnd_vn import extract_qdnd
 from crawler.extractors.domains.thanhnien_vn import extract_thanhnien
 
 DomainExtractor = Callable[[bytes, str], tuple[str | None, str]]
@@ -26,3 +27,5 @@ register("wapask.39.net", extract_ask_39)
 register("thanhnien.vn", extract_thanhnien)
 register("baothanhhoa.vn", extract_baothanhhoa)
 register("baoquangtri.vn", extract_baoquangtri)
+register("www.qdnd.vn", extract_qdnd)
+register("qdnd.vn", extract_qdnd)

@@ -45,18 +45,26 @@ def merge_recovery_for_worker(worker_id: int, worker_dir: Path, recovery_dir: Pa
 
     print(f"Current highest shard sequence in worker {worker_id}: {max_seq}")
 
-    recovery_shards = sorted(recovery_corpus_dir.glob("part-*.parquet"))
-    if not recovery_shards:
-        print("[INFO] No recovery shards found to merge.")
-        return
-
     w_conn = sqlite3.connect(worker_manifest_path)
     w_cur = w_conn.cursor()
+
+    # Find how many recovery shards have already been merged
+    w_cur.execute("SELECT COUNT(*) FROM shards WHERE temp_path = ''")
+    already_merged_count = w_cur.fetchone()[0]
+
+    recovery_shards = sorted(recovery_corpus_dir.glob("part-*.parquet"))
+    new_shards_to_merge = recovery_shards[already_merged_count:]
+    if not new_shards_to_merge:
+        print(f"[INFO] No new recovery shards to merge for Worker {worker_id} (already merged {already_merged_count} shards).")
+        w_conn.close()
+        return
+
+    print(f"Worker {worker_id}: Found {len(new_shards_to_merge)} new recovery shard(s) to merge (previously merged {already_merged_count}).")
 
     copied_shards = 0
     updated_tasks = 0
 
-    for rec_shard in recovery_shards:
+    for rec_shard in new_shards_to_merge:
         max_seq += 1
         new_shard_name = f"part-{max_seq:06d}.parquet"
         dest_shard_path = worker_corpus_dir / new_shard_name
@@ -71,13 +79,13 @@ def merge_recovery_for_worker(worker_id: int, worker_dir: Path, recovery_dir: Pa
         # Register shard in worker manifest
         w_cur.execute(
             """
-            INSERT OR REPLACE INTO shards(shard_name, status, row_count, temp_path, final_path, created_at, updated_at)
+            INSERT OR REPLACE INTO shards(shard_name, status, row_count, temp_path, final_path, created_at, committed_at)
             VALUES (?, 'COMMITTED', ?, '', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """,
             (new_shard_name, row_count, str(dest_shard_path))
         )
 
-        # Update tasks and shard_items
+        # Update tasks in manifest
         records = table.to_pylist()
         for rec in records:
             doc_id = rec["doc_id"]
@@ -108,13 +116,6 @@ def merge_recovery_for_worker(worker_id: int, worker_dir: Path, recovery_dir: Pa
             )
             if w_cur.rowcount > 0:
                 updated_tasks += 1
-                w_cur.execute(
-                    """
-                    INSERT OR REPLACE INTO shard_items(shard_name, doc_id)
-                    VALUES (?, ?)
-                    """,
-                    (new_shard_name, doc_id)
-                )
 
     w_conn.commit()
     w_conn.close()

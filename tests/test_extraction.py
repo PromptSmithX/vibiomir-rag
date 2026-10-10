@@ -198,3 +198,33 @@ def test_ask_39_extractor_mobile() -> None:
     assert "李医生" in (result.text or "")
     assert "保持口腔清洁" in (result.text or "")
 
+
+def test_qdnd_extractor() -> None:
+    html = (
+        "<html><head><title>Bảo đảm y tế dịp đại lễ</title></head><body>"
+        "<h1>Bảo đảm y tế dịp đại lễ</h1>"
+        '<div class="articleContent">'
+        "<p>Để bảo đảm an toàn tuyệt đối, không để dịch bệnh bùng phát, ngành y tế đã triển khai phương án chi tiết.</p>"
+        "<p>Các bệnh viện và trung tâm y tế duy trì trực cấp cứu 24/24 trong toàn bộ đợt cao điểm.</p>"
+        "</div>"
+        "</body></html>"
+    ).encode()
+    outcome = FetchOutcome(
+        FetchTarget("key", "https://www.qdnd.vn/y-te/123", "www.qdnd.vn", 1),
+        CrawlStatus.SUCCESS,
+        final_url="https://www.qdnd.vn/y-te/123",
+        content_type="text/html",
+        content=html,
+        http_status=200,
+        bytes_downloaded=len(html),
+    )
+    result = extract_fetch_outcome(
+        outcome,
+        {"min_text_chars": 20, "pdf_min_chars_per_page": 50, "language_confidence": 0.15},
+    )
+    assert result.status == CrawlStatus.SUCCESS
+    assert result.extractor == "domain:www.qdnd.vn"
+    assert "Bảo đảm y tế" in (result.title or "")
+    assert "trực cấp cứu" in (result.text or "")
+
+

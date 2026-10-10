@@ -125,3 +125,27 @@ def test_adapters_can_recover_task() -> None:
     assert baidu_adapter is not None
     assert baidu_adapter.can_recover_task("ROBOTS_DENIED", None, 0, "ROBOTS_DENIED") is True
     assert baidu_adapter.can_recover_task("FAILED", 500, 0, "NETWORK_ERROR") is False
+
+
+def test_vietnamese_news_adapter() -> None:
+    for domain in ("vov.vn", "baolangson.vn", "baohaiphong.vn", "www.qdnd.vn"):
+        adapter = get_adapter(domain)
+        assert adapter is not None
+        assert adapter.respect_robots is False
+        assert adapter.can_recover_task("FAILED", 403, 0, "HTTP_403") is True
+        assert adapter.can_recover_task("ROBOTS_DENIED", None, 0, "ROBOTS_DENIED") is True
+
+    # VOV gets curl headers to bypass PerimeterX TLS mismatch
+    vov_adapter = get_adapter("vov.vn")
+    assert vov_adapter is not None
+    url, headers = vov_adapter.adapt_request("https://vov.vn/suc-khoe/123.vov")
+    assert headers is not None
+    assert "curl" in headers["User-Agent"]
+
+    # BHP gets browser headers
+    bhp_adapter = get_adapter("baohaiphong.vn")
+    assert bhp_adapter is not None
+    url, headers = bhp_adapter.adapt_request("https://baohaiphong.vn/bai-viet-123.html")
+    assert headers is not None
+    assert "Chrome" in headers["User-Agent"]
+

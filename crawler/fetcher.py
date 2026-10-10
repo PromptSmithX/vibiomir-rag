@@ -127,6 +127,7 @@ class Fetcher:
         self.session = aiohttp.ClientSession(
             timeout=timeout,
             connector=connector,
+            cookie_jar=aiohttp.DummyCookieJar(),
             headers={"User-Agent": self.config.user_agent, "Accept-Encoding": "gzip, deflate"},
             auto_decompress=True,
         )
@@ -282,6 +283,15 @@ class Fetcher:
                                     ),
                                     reserved,
                                 )
+                            set_cookies = response.headers.getall("Set-Cookie", None)
+                            if set_cookies is None and "Set-Cookie" in response.headers:
+                                set_cookies = [response.headers["Set-Cookie"]]
+                            cookie_tokens = []
+                            if set_cookies:
+                                for part in set_cookies:
+                                    token = part.split(";", 1)[0].strip()
+                                    if "=" in token:
+                                        cookie_tokens.append(token)
                             current_url = urljoin(current_url, location)
                             domain = domain_from_url(current_url)
                             adapter = get_adapter(domain)
@@ -290,6 +300,13 @@ class Fetcher:
                                 domain = domain_from_url(current_url)
                             else:
                                 request_headers = None
+                            if cookie_tokens:
+                                request_headers = dict(request_headers or {})
+                                clean_cookie = "; ".join(cookie_tokens)
+                                if "Cookie" in request_headers:
+                                    request_headers["Cookie"] = f"{request_headers['Cookie']}; {clean_cookie}"
+                                else:
+                                    request_headers["Cookie"] = clean_cookie
                             continue
                         if status in RETRYABLE_STATUSES:
                             retry_at = _retry_after(response.headers.get("Retry-After")) or (

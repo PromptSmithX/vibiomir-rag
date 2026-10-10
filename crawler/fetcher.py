@@ -209,34 +209,40 @@ class Fetcher:
                 if cooldown > 0:
                     await asyncio.sleep(cooldown)
                 robots_started = time.monotonic()
-                try:
-                    allowed, crawl_delay = await self.robots.allowed(current_url)
-                except RobotsUnavailable as exc:
-                    return (
-                        FetchOutcome(
-                            target,
-                            CrawlStatus.FAILED,
-                            final_url=current_url,
-                            retryable=True,
-                            retry_at=self.backoff_time(target.attempts),
-                            error_type="ROBOTS_UNAVAILABLE",
-                            error=str(exc),
-                        ),
-                        reserved,
-                    )
-                finally:
-                    active_seconds[0] += time.monotonic() - robots_started
-                if not allowed:
-                    return (
-                        FetchOutcome(
-                            target,
-                            CrawlStatus.ROBOTS_DENIED,
-                            final_url=current_url,
-                            error_type="ROBOTS_DENIED",
-                            error="robots.txt disallows this URL",
-                        ),
-                        reserved,
-                    )
+                should_respect_robots = (
+                    getattr(adapter, "respect_robots", True) if adapter is not None else True
+                )
+                if should_respect_robots:
+                    try:
+                        allowed, crawl_delay = await self.robots.allowed(current_url)
+                    except RobotsUnavailable as exc:
+                        return (
+                            FetchOutcome(
+                                target,
+                                CrawlStatus.FAILED,
+                                final_url=current_url,
+                                retryable=True,
+                                retry_at=self.backoff_time(target.attempts),
+                                error_type="ROBOTS_UNAVAILABLE",
+                                error=str(exc),
+                            ),
+                            reserved,
+                        )
+                    finally:
+                        active_seconds[0] += time.monotonic() - robots_started
+                    if not allowed:
+                        return (
+                            FetchOutcome(
+                                target,
+                                CrawlStatus.ROBOTS_DENIED,
+                                final_url=current_url,
+                                error_type="ROBOTS_DENIED",
+                                error="robots.txt disallows this URL",
+                            ),
+                            reserved,
+                        )
+                else:
+                    crawl_delay = None
 
                 await self.limiter.respect_delay(domain, crawl_delay)
                 async with self.limiter.semaphore(domain):

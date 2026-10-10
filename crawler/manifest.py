@@ -7,6 +7,7 @@ from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from crawler.models import DocumentRecord, FetchTarget, SourceDocument
 from crawler.source import iter_source_rows
@@ -226,6 +227,78 @@ class Manifest:
                 self.connection.executemany(
                     "UPDATE crawl_tasks SET status='PENDING', updated_at=? WHERE fetch_key=?",
                     [(utc_now(), key) for key in keys],
+                )
+            return len(keys)
+
+    def recover_adapter_targets(self, adapters: dict[str, Any]) -> dict[str, int]:
+        recovered_counts: dict[str, int] = {}
+        now = utc_now()
+        with self.transaction():
+            for domain, adapter in adapters.items():
+                can_recover = getattr(adapter, "can_recover_task", None)
+                if not callable(can_recover):
+                    continue
+                rows = self.connection.execute(
+                    """
+                    SELECT fetch_key, status, http_status, bytes_downloaded, error_type
+                    FROM crawl_tasks
+                    WHERE domain = ? AND status != 'SUCCESS'
+                    """,
+                    (domain,),
+                ).fetchall()
+                matching_keys = [
+                    row[0]
+                    for row in rows
+                    if can_recover(row[1], row[2], row[3], row[4])
+                ]
+                if matching_keys:
+                    self.connection.executemany(
+                        """
+                        UPDATE crawl_tasks
+                        SET status='PENDING', attempts=0, error_type=NULL, error=NULL, updated_at=?
+                        WHERE fetch_key=?
+                        """,
+                        [(now, key) for key in matching_keys],
+                    )
+                    self.connection.executemany(
+                        """
+                        UPDATE fetch_targets
+                        SET status='PENDING', attempts=0, error_type=NULL, error=NULL, updated_at=?
+                        WHERE fetch_key=?
+                        """,
+                        [(now, key) for key in matching_keys],
+                    )
+                    recovered_counts[domain] = len(matching_keys)
+        return recovered_counts
+
+    def recover_transient_network_errors(self) -> int:
+        now = utc_now()
+        with self.transaction():
+            keys = [
+                row[0]
+                for row in self.connection.execute(
+                    """
+                    SELECT fetch_key FROM crawl_tasks
+                    WHERE status = 'FAILED' AND error_type = 'NETWORK_ERROR'
+                    """
+                ).fetchall()
+            ]
+            if keys:
+                self.connection.executemany(
+                    """
+                    UPDATE crawl_tasks
+                    SET status='PENDING', attempts=0, error_type=NULL, error=NULL, updated_at=?
+                    WHERE fetch_key=?
+                    """,
+                    [(now, key) for key in keys],
+                )
+                self.connection.executemany(
+                    """
+                    UPDATE fetch_targets
+                    SET status='PENDING', attempts=0, error_type=NULL, error=NULL, updated_at=?
+                    WHERE fetch_key=?
+                    """,
+                    [(now, key) for key in keys],
                 )
             return len(keys)
 

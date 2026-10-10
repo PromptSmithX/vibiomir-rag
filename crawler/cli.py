@@ -104,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DOMAIN",
         help="leave this domain pending during the current run; may be repeated",
     )
+    crawl_run.add_argument(
+        "--no-recover",
+        action="store_true",
+        help="skip auto-recovery of adapter-targeted and network-error tasks on startup",
+    )
     crawl_commands.add_parser("status")
 
     corpus = commands.add_parser("corpus", help="verify persistent output")
@@ -206,6 +211,7 @@ def execute(args: argparse.Namespace, config: AppConfig) -> int:
                     fetch_timing_path=timing_path,
                     domain_concurrency_overrides=domain_concurrency_overrides,
                     deferred_domains=deferred_domains,
+                    recover_adapters=not getattr(args, "no_recover", False),
                 ).run(args.target_limit)
             )
             if deferred_domains:

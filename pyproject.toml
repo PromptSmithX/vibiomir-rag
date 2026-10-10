@@ -33,9 +33,10 @@ dev = [
 
 [project.scripts]
 vibiomir-crawler = "crawler.cli:main"
+vibiomir-curate = "curation.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["crawler"]
+packages = ["crawler", "curation"]
 
 [tool.pytest.ini_options]
 addopts = "-q --basetemp=.windows-test-tmp"

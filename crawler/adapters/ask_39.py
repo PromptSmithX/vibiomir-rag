@@ -17,6 +17,8 @@ _MOBILE_HEADERS: dict[str, str] = {
 class Ask39RequestAdapter:
     """Strategy adapter for ask.39.net: routes to mobile CDN mirror and detects verification."""
 
+    respect_robots: bool = True
+
     def adapt_request(self, url: str) -> tuple[str, dict[str, str] | None]:
         try:
             parsed = urlsplit(url)
@@ -30,3 +32,12 @@ class Ask39RequestAdapter:
 
     def is_bot_challenge(self, final_url: str | None, status: int | None = None) -> bool:
         return is_bot_challenge_url(final_url)
+
+    def can_recover_task(
+        self,
+        status: str,
+        http_status: int | None,
+        bytes_downloaded: int | None,
+        error_type: str | None,
+    ) -> bool:
+        return status == "EMPTY_CONTENT" and bytes_downloaded == 2287

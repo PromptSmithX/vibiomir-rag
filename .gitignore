@@ -1,12 +1,49 @@
+# =============================================================================
+# Python & Environment
+# =============================================================================
 .venv/
+.venv*/
+env/
+venv/
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
+*$py.class
+*.egg-info/
+build/
+dist/
 .uv-cache/
+
+# =============================================================================
+# Testing & Code Quality
+# =============================================================================
+.pytest_cache/
+.pytest-agent-cache*/
+.pytest-agent-tmp*/
+.windows-pytest-cache/
+.windows-test-tmp/
+.ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 
+# =============================================================================
+# Models, Weights & Embeddings (Large binaries)
+# =============================================================================
+models/
+weights/
+checkpoints/
+*.npy
+*.npz
+*.faiss
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# =============================================================================
+# Data Directories (Corpus, Crawl, Index, Experiments, Submissions)
+# =============================================================================
 data/source/*
 !data/source/.gitkeep
 data/crawl/*
@@ -15,15 +52,58 @@ data/clean/*
 !data/clean/.gitkeep
 data/retrieval/*
 !data/retrieval/.gitkeep
-logs/*
-!logs/.gitkeep
+data/experiments/*
+!data/experiments/.gitkeep
+data/candidates/*
+!data/candidates/.gitkeep
+data/pilots/*
+!data/pilots/.gitkeep
+data/tmp/*
+!data/tmp/.gitkeep
 
-dist/
+# Catch-all for heavy data & database files anywhere in workspace
+*.parquet
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+
+# =============================================================================
+# Submissions & Archives
+# =============================================================================
+*.zip
+*.tar
+*.tar.gz
+*.7z
+scoring_result/
+
+# =============================================================================
+# Crawler, Kaggle & Worker outputs
+# =============================================================================
 partitions/
 partitions_v2/
 kaggle_outputs/
+logs/*
+!logs/.gitkeep
+*.log
 
-# Test caches & temp artifacts
-.pytest-agent-cache*/
-.pytest-agent-tmp*/
-.windows-test-tmp/
+# =============================================================================
+# IDE & System Files
+# =============================================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Secrets & Local Configurations
+# =============================================================================
+.env
+.env.local
+*.token
+credentials.json

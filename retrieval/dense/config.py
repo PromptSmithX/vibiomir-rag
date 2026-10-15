@@ -68,6 +68,7 @@ class DenseRetrievalConfig:
     dense_chunk_top_k: int = 500
     document_aggregation: str = "max"
     top_k_docs: int = 1000
+    export_chunk_hits: bool = True
 
 
 @dataclass
@@ -81,12 +82,59 @@ class FusionConfig:
 
 
 @dataclass
+class PassageExpansionConfig:
+    """Configuration for optional continuous source passage expansion."""
+
+    enabled: bool = False
+    max_tokens: int = 1024
+    anchor: str = "retrieved_chunk"
+    tokenizer_name: str | None = None
+
+
+@dataclass
+class ChunkSelectionConfig:
+    """Configuration for relevant chunk selection strategy."""
+
+    top_k: int = 50
+    max_chunks_per_document: int = 3
+    deduplicate: bool = True
+    dedup_threshold: float = 0.85
+    preserve_original_text: bool = True
+    filter_boilerplate: bool = True
+    min_chunk_chars: int = 30
+    passage_expansion: PassageExpansionConfig = field(default_factory=PassageExpansionConfig)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ChunkSelectionConfig:
+        pe_data = data.get("passage_expansion", {})
+        if isinstance(pe_data, dict):
+            pe_cfg = PassageExpansionConfig(
+                enabled=bool(pe_data.get("enabled", False)),
+                max_tokens=int(pe_data.get("max_tokens", 1024)),
+                anchor=str(pe_data.get("anchor", "retrieved_chunk")),
+                tokenizer_name=pe_data.get("tokenizer_name"),
+            )
+        else:
+            pe_cfg = PassageExpansionConfig()
+        return cls(
+            top_k=data.get("top_k", 50),
+            max_chunks_per_document=data.get("max_chunks_per_document", 3),
+            deduplicate=data.get("deduplicate", True),
+            dedup_threshold=data.get("dedup_threshold", 0.85),
+            preserve_original_text=data.get("preserve_original_text", True),
+            filter_boilerplate=data.get("filter_boilerplate", True),
+            min_chunk_chars=data.get("min_chunk_chars", 30),
+            passage_expansion=pe_cfg,
+        )
+
+
+@dataclass
 class SubmissionConfig:
     """Configuration for official ViBioMIR submission exporting."""
 
-    top_docs: int = 10
-    top_chunks: int = 10
-    chunks_per_doc: int = 1
+    top_docs: int = 50
+    top_chunks: int = 50
+    chunks_per_doc: int = 3
     include_chunk_order: bool = False
     doc_id_type: str = "int"
     output_filename: str = "submission.json"
@@ -103,6 +151,11 @@ class ExperimentPaths:
     bm25_hits: str = "data/retrieval/candidates/retrieval_top_1000.parquet"
     queries: str = "data/source/query.parquet"
     output_dir: str = "data/experiments/exp_a1"
+    index_dir: str | None = None
+    chunks_dir: str | None = None
+    fusion_hits: str | None = None
+    dense_hits: str | None = None
+    cached_query_embeddings: str | None = None
 
 
 @dataclass
@@ -119,6 +172,7 @@ class ExperimentConfig:
     retrieval: DenseRetrievalConfig = field(default_factory=DenseRetrievalConfig)
     fusion: FusionConfig = field(default_factory=FusionConfig)
     submission: SubmissionConfig = field(default_factory=SubmissionConfig)
+    chunk_selection: ChunkSelectionConfig = field(default_factory=ChunkSelectionConfig)
     paths: ExperimentPaths = field(default_factory=ExperimentPaths)
 
     def to_dict(self) -> dict[str, Any]:
@@ -132,16 +186,39 @@ class ExperimentConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExperimentConfig:
-        chunking_data = data.get("chunking", {})
-        model_data = data.get("model", {})
-        index_data = data.get("index", {})
-        retrieval_data = data.get("retrieval", {})
-        fusion_data = data.get("fusion", {})
-        submission_data = data.get("submission", {})
-        paths_data = data.get("paths", {})
+        chunking_data = dict(data.get("chunking", {}))
+        model_data = dict(data.get("model", {}))
+        index_data = dict(data.get("index", {}))
+        retrieval_data = dict(data.get("retrieval", {}))
+        fusion_data = dict(data.get("fusion", {}))
+        submission_data = dict(data.get("submission", {}))
+        chunk_sel_data = dict(data.get("chunk_selection", {}))
+        paths_data = dict(data.get("paths", {}))
+
+        # Support both experiment: {name: ...} and experiment_id: ...
+        exp_id = data.get("experiment_id")
+        if not exp_id and "experiment" in data:
+            exp_val = data["experiment"]
+            if isinstance(exp_val, dict):
+                exp_id = exp_val.get("name") or exp_val.get("experiment_id")
+            elif isinstance(exp_val, str):
+                exp_id = exp_val
+        if not exp_id:
+            exp_id = "exp_a1"
+
+        # Align chunk_selection.max_chunks_per_document and submission.chunks_per_doc
+        if "max_chunks_per_document" in chunk_sel_data:
+            if "chunks_per_doc" not in submission_data:
+                submission_data["chunks_per_doc"] = chunk_sel_data["max_chunks_per_document"]
+        elif "chunks_per_doc" in submission_data:
+            chunk_sel_data["max_chunks_per_document"] = submission_data["chunks_per_doc"]
+
+        # Align submission.top_chunks and chunk_selection.top_k
+        if "top_chunks" in submission_data and "top_k" not in chunk_sel_data:
+            chunk_sel_data["top_k"] = submission_data["top_chunks"]
 
         return cls(
-            experiment_id=data.get("experiment_id", "exp_a1"),
+            experiment_id=exp_id,
             description=data.get("description", ""),
             chunking=ChunkingConfig(**chunking_data) if isinstance(chunking_data, dict) else ChunkingConfig(),
             model=ModelConfig(**model_data) if isinstance(model_data, dict) else ModelConfig(),
@@ -153,6 +230,9 @@ class ExperimentConfig:
             submission=SubmissionConfig(**submission_data)
             if isinstance(submission_data, dict)
             else SubmissionConfig(),
+            chunk_selection=ChunkSelectionConfig.from_dict(chunk_sel_data)
+            if isinstance(chunk_sel_data, dict)
+            else ChunkSelectionConfig(),
             paths=ExperimentPaths(**paths_data) if isinstance(paths_data, dict) else ExperimentPaths(),
         )
 

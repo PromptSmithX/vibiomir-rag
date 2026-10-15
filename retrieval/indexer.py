@@ -1,5 +1,7 @@
 """BM25 Indexer using Tantivy engine with multilingual medical tokenization."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -8,7 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import psutil
-import tantivy
+
+try:
+    import tantivy
+except ImportError:
+    tantivy = None
 
 from retrieval.models import IndexStats
 from retrieval.reader import CorpusReader

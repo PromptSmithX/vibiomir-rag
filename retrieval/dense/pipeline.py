@@ -7,6 +7,8 @@ import logging
 import time
 from pathlib import Path
 
+import numpy as np
+
 from retrieval.dense.candidate_loader import (
     CandidateChunkingPipeline,
     load_candidate_doc_ids,
@@ -18,7 +20,6 @@ from retrieval.dense.fusion import ReciprocalRankFusion
 from retrieval.dense.index import DenseIndex
 from retrieval.dense.model_loader import DenseModelLoader
 from retrieval.dense.tokenizer_helper import get_token_counter
-from retrieval.searcher import BM25Searcher
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ class ExperimentAPipeline:
     def run_retrieval(self, max_queries: int | None = None) -> Path:
         """Step 4: Execute dense retrieval on competition queries."""
         logger.info("=== STEP 4: DENSE RETRIEVAL ON QUERIES ===")
-        index_dir = self.exp_dir / "index"
+        index_dir = Path(self.config.paths.index_dir) if self.config.paths.index_dir else (self.exp_dir / "index")
         index = DenseIndex.load(index_dir)
 
         # Load queries
@@ -131,29 +132,65 @@ class ExperimentAPipeline:
         if not query_path.exists():
             raise FileNotFoundError(f"Query file not found: {query_path}")
 
-        queries = BM25Searcher.load_queries_from_parquet(query_path)
+        import pyarrow.parquet as pq
+
+        tbl = pq.read_table(query_path)
+        id_col = "id" if "id" in tbl.schema.names else "query_id"
+        text_col = "query" if "query" in tbl.schema.names else "query_text"
+        query_ids = [int(i) for i in tbl.column(id_col).to_pylist()]
+        query_texts = [str(t or "") for t in tbl.column(text_col).to_pylist()]
+
         if max_queries:
-            queries = queries[:max_queries]
-            logger.info("Limiting dense search to %d queries", len(queries))
+            query_ids = query_ids[:max_queries]
+            query_texts = query_texts[:max_queries]
+            logger.info("Limiting dense search to %d queries", len(query_ids))
 
-        query_texts = [q.query_text for q in queries]
-        query_ids = [q.query_id for q in queries]
+        retrieval_dir = self.exp_dir / "retrieval"
+        retrieval_dir.mkdir(parents=True, exist_ok=True)
 
-        # Embed queries
-        embedder = DenseEmbedder(config=self.config.model)
-        logger.info("Encoding %d queries...", len(query_texts))
-        query_vectors = embedder.encode_queries(query_texts)
+        # Check for cached query embeddings
+        cached_vectors_file = (
+            Path(self.config.paths.cached_query_embeddings)
+            if self.config.paths.cached_query_embeddings
+            else (retrieval_dir / "query_vectors.npy")
+        )
+
+        query_vectors: np.ndarray
+        if cached_vectors_file.exists():
+            logger.info("Loading precomputed query vectors from cache: %s", cached_vectors_file)
+            query_vectors = np.load(cached_vectors_file)
+            if len(query_vectors) != len(query_texts):
+                logger.warning(
+                    "Cached query vectors length (%d) mismatch queries count (%d). Re-encoding...",
+                    len(query_vectors),
+                    len(query_texts),
+                )
+                embedder = DenseEmbedder(config=self.config.model)
+                query_vectors = embedder.encode_queries(query_texts)
+                np.save(cached_vectors_file, query_vectors)
+        else:
+            embedder = DenseEmbedder(config=self.config.model)
+            logger.info("Encoding %d queries with %s...", len(query_texts), self.config.model.model_id)
+            query_vectors = embedder.encode_queries(query_texts)
+            np.save(cached_vectors_file, query_vectors)
+            logger.info("Saved query vectors cache to %s", cached_vectors_file)
 
         # Search and aggregate to document level
-        hits, stats = index.search_and_aggregate_documents(
+        res = index.search_and_aggregate_documents(
             query_ids=query_ids,
             query_vectors=query_vectors,
             config=self.config.retrieval,
+            return_chunk_hits=True,
         )
+        hits, stats, chunk_hits = res  # type: ignore
 
-        retrieval_dir = self.exp_dir / "retrieval"
         out_file = retrieval_dir / f"dense_retrieval_top_{self.config.retrieval.top_k_docs}.parquet"
         DenseIndex.export_dense_hits(hits, out_file)
+
+        # Export chunk-level hits if enabled
+        if getattr(self.config.retrieval, "export_chunk_hits", True):
+            chunk_hits_file = retrieval_dir / f"dense_chunk_hits_top_{self.config.retrieval.dense_chunk_top_k}.parquet"
+            DenseIndex.export_chunk_hits(query_ids, chunk_hits, chunk_hits_file)
 
         # Save stats
         stats_data = {
@@ -178,9 +215,13 @@ class ExperimentAPipeline:
                 f"Ensure BM25 retrieval has been executed."
             )
 
-        dense_file = (
-            self.exp_dir / "retrieval" / f"dense_retrieval_top_{self.config.retrieval.top_k_docs}.parquet"
-        )
+        if self.config.paths.dense_hits and Path(self.config.paths.dense_hits).exists():
+            dense_file = Path(self.config.paths.dense_hits)
+        else:
+            dense_file = (
+                self.exp_dir / "retrieval" / f"dense_retrieval_top_{self.config.retrieval.top_k_docs}.parquet"
+            )
+
         if not dense_file.exists():
             raise FileNotFoundError(f"Dense hits file not found: {dense_file}")
 
@@ -217,16 +258,22 @@ class ExperimentAPipeline:
         retrieval_file: Path | str | None = None,
         top_docs: int | None = None,
         top_chunks: int | None = None,
+        max_chunks_per_doc: int | None = None,
         create_zip: bool = True,
     ) -> tuple[Path, Path | None]:
         """Step 6: Export official ViBioMIR submission JSON and ZIP."""
         logger.info("=== STEP 6: EXPORTING OFFICIAL VIBIOMIR SUBMISSION ===")
         from retrieval.submission.exporter import SubmissionExporter
 
-        exporter = SubmissionExporter(config=self.config.submission)
+        exporter = SubmissionExporter(
+            config=self.config.submission,
+            chunk_selection_config=self.config.chunk_selection,
+        )
 
         if retrieval_file:
             r_file = Path(retrieval_file)
+        elif self.config.paths.fusion_hits and Path(self.config.paths.fusion_hits).exists():
+            r_file = Path(self.config.paths.fusion_hits)
         else:
             fusion_file = self.exp_dir / "fusion" / f"rrf_fusion_top_{self.config.fusion.top_k}.parquet"
             dense_file = self.exp_dir / "retrieval" / f"dense_retrieval_top_{self.config.retrieval.top_k_docs}.parquet"
@@ -237,11 +284,19 @@ class ExperimentAPipeline:
             else:
                 r_file = fusion_file
 
-        chunks_dir = self.exp_dir / "chunks"
+        chunks_dir = (
+            Path(self.config.paths.chunks_dir)
+            if self.config.paths.chunks_dir
+            else (self.exp_dir / "chunks")
+        )
         query_path = Path(self.config.paths.queries)
-        sub_dir = self.exp_dir / "submission"
+        sub_dir = Path(self.config.submission.output_dir) if self.config.submission.output_dir else (self.exp_dir / "submission")
         json_out = sub_dir / self.config.submission.output_filename
         zip_out = (sub_dir / self.config.submission.zip_filename) if create_zip else None
+
+        # Check for chunk hits
+        chunk_hits_file = self.exp_dir / "retrieval" / f"dense_chunk_hits_top_{self.config.retrieval.dense_chunk_top_k}.parquet"
+        ch_path = chunk_hits_file if chunk_hits_file.exists() else None
 
         summary = exporter.export(
             retrieval_file=r_file,
@@ -252,10 +307,17 @@ class ExperimentAPipeline:
             corpus_path=self.config.submission.corpus_path,
             top_docs=top_docs or self.config.submission.top_docs,
             top_chunks=top_chunks or self.config.submission.top_chunks,
+            max_chunks_per_doc=max_chunks_per_doc or self.config.chunk_selection.max_chunks_per_document,
             include_chunk_order=self.config.submission.include_chunk_order,
+            chunk_hits_file=ch_path,
+            metadata_extra={
+                "experiment_id": self.config.experiment_id,
+                "description": self.config.description,
+            },
         )
 
         return summary.json_path, summary.zip_path
+
 
     def run_all(
         self,

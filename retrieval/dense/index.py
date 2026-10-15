@@ -29,6 +29,16 @@ SCHEMA_DENSE_HITS = pa.schema(
     ]
 )
 
+SCHEMA_CHUNK_HITS = pa.schema(
+    [
+        ("query_id", pa.int64()),
+        ("doc_id", pa.int64()),
+        ("chunk_id", pa.string()),
+        ("rank", pa.int32()),
+        ("score", pa.float32()),
+    ]
+)
+
 
 class NumpyVectorIndex:
     """Exact cosine/inner-product index using pure NumPy.
@@ -280,7 +290,8 @@ class DenseIndex:
         query_ids: list[int],
         query_vectors: np.ndarray,
         config: DenseRetrievalConfig,
-    ) -> tuple[list[DenseDocHit], DenseRetrievalStats]:
+        return_chunk_hits: bool = False,
+    ) -> tuple[list[DenseDocHit], DenseRetrievalStats] | tuple[list[DenseDocHit], DenseRetrievalStats, list[list[ChunkHit]]]:
         """Execute dense search at chunk level, aggregate scores to document level (Max similarity),
         and return deduplicated ranked documents per query.
         """
@@ -340,6 +351,8 @@ class DenseIndex:
             qps,
             len(all_doc_hits),
         )
+        if return_chunk_hits:
+            return all_doc_hits, stats, all_chunk_hits
         return all_doc_hits, stats
 
     @staticmethod
@@ -365,3 +378,42 @@ class DenseIndex:
         pq.write_table(tbl, out_p, compression="zstd")
         logger.info("Exported %d dense document hits to %s", len(hits), out_p)
         return out_p
+
+    @staticmethod
+    def export_chunk_hits(
+        query_ids: list[int],
+        all_chunk_hits: list[list[ChunkHit]],
+        output_file: Path | str,
+    ) -> Path:
+        """Export dense chunk-level hits to Parquet for downstream selection."""
+        out_p = Path(output_file)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+
+        q_list: list[int] = []
+        d_list: list[int] = []
+        c_list: list[str] = []
+        r_list: list[int] = []
+        s_list: list[float] = []
+
+        for q_id, hits in zip(query_ids, all_chunk_hits, strict=False):
+            for h in hits:
+                q_list.append(int(q_id))
+                d_list.append(int(h.doc_id))
+                c_list.append(str(h.chunk_id))
+                r_list.append(int(h.rank))
+                s_list.append(float(h.score))
+
+        tbl = pa.Table.from_pydict(
+            {
+                "query_id": q_list,
+                "doc_id": d_list,
+                "chunk_id": c_list,
+                "rank": r_list,
+                "score": s_list,
+            },
+            schema=SCHEMA_CHUNK_HITS,
+        )
+        pq.write_table(tbl, out_p, compression="zstd")
+        logger.info("Exported %d chunk hits across %d queries to %s", len(q_list), len(query_ids), out_p)
+        return out_p
+

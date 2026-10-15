@@ -65,10 +65,12 @@ def extract_ask_39(html_bytes: bytes, url: str) -> tuple[str | None, str]:
     seen_texts: set[str] = set()
 
     # Mobile answers
-    mobile_nodes = tree.css(".pJingbianContent") or tree.css(".article-content")
+    mobile_nodes: list = []
+    for sel in [".pJingbianContent", ".article-content", ".doctor-content", ".doctor-main"]:
+        mobile_nodes.extend(tree.css(sel))
     for node in mobile_nodes:
         t = _clean_str(node.text(strip=True))
-        if t and len(t) >= 20 and t not in seen_texts:
+        if t and len(t) >= 15 and t not in seen_texts:
             seen_texts.add(t)
             doc_node = tree.css_first(".doctor-info")
             doc_desc = _clean_str(doc_node.text(strip=True)) if doc_node else ""

@@ -38,6 +38,19 @@ for _sub in (
     "gc.39.net",
     "wei.39.net",
     "gk.39.net",
+    "baby.39.net",
+    "byby.39.net",
+    "care.39.net",
+    "ek.39.net",
+    "fitness.39.net",
+    "food.39.net",
+    "gan.39.net",
+    "heart.39.net",
+    "jbk.39.net",
+    "man.39.net",
+    "nk.39.net",
+    "sj.39.net",
+    "tnb.39.net",
 ):
     register_adapter(_sub, _net39)
 
@@ -50,6 +63,9 @@ register_adapter("baolangson.vn", _vietnews)
 register_adapter("baohaiphong.vn", _vietnews)
 register_adapter("www.qdnd.vn", _vietnews)
 register_adapter("qdnd.vn", _vietnews)
+register_adapter("youmed.vn", _vietnews)
+register_adapter("laodong.vn", _vietnews)
+register_adapter("www.laodong.vn", _vietnews)
 
 _baidu = BaiduHealthRequestAdapter()
 register_adapter("www.baidu.com", _baidu)

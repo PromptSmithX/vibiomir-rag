@@ -85,13 +85,16 @@ def _retry_after(value: str | None) -> float | None:
     if not value:
         return None
     try:
-        return time.time() + max(0, int(value.strip()))
+        # Cap Retry-After to at most 300s (5 minutes) to avoid indefinite worker freezes
+        delay = min(max(0, int(value.strip())), 300)
+        return time.time() + delay
     except ValueError:
         try:
             parsed = email.utils.parsedate_to_datetime(value)
             if parsed.tzinfo is None:
                 parsed = parsed.astimezone()
-            return parsed.timestamp()
+            target_ts = parsed.timestamp()
+            return min(target_ts, time.time() + 300)
         except (TypeError, ValueError, OverflowError):
             return None
 
@@ -208,6 +211,19 @@ class Fetcher:
                 domain = domain_from_url(current_url)
                 cooldown = self._domain_cooldown_until.get(domain, 0.0) - time.time()
                 if cooldown > 0:
+                    if cooldown > 5.0:
+                        return (
+                            FetchOutcome(
+                                target,
+                                CrawlStatus.FAILED,
+                                final_url=current_url,
+                                retryable=True,
+                                retry_at=self._domain_cooldown_until[domain],
+                                error_type="DOMAIN_COOLDOWN",
+                                error=f"Domain {domain} is in cooldown for {cooldown:.1f}s",
+                            ),
+                            reserved,
+                        )
                     await asyncio.sleep(cooldown)
                 robots_started = time.monotonic()
                 should_respect_robots = (

@@ -1,0 +1,297 @@
+import json
+from pathlib import Path
+
+cells = [
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "# ViBioMIR 2026 - Experiment A1: Qwen3-Embedding-0.6B + RRF Fusion\n",
+            "\n",
+            "This notebook runs the GPU Dense Embedding and Retrieval pipeline on Kaggle:\n",
+            "1. **Input**: Candidate chunks (103k docs, ~467k chunks) pre-computed locally.\n",
+            "2. **Model**: `Qwen/Qwen3-Embedding-0.6B` with `float16` precision and batch size 64.\n",
+            "3. **Dense Index**: Exact Inner Product (`IndexFlatIP`) with FAISS.\n",
+            "4. **Dense Search**: Retrieve top-500 candidate chunks for 1,200 competition queries.\n",
+            "5. **RRF Fusion**: Merge BM25 Top 1,000 and Dense Top 1,000.\n",
+            "6. **Submission**: Export & Validate official `submission.json` and `submission.zip`.\n",
+            "7. **Vector Artifacts**: Zip all vector embeddings and index for download back to local machine.\n",
+            "\n",
+            "> **Prerequisites on Kaggle**:\n",
+            "> - **Accelerator**: GPU T4 x2 or GPU P100 (16GB VRAM)\n",
+            "> - **Internet**: ON (to download model weights from HuggingFace)"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 1. Check GPU Device\n",
+            "import torch\n",
+            "print(f\"PyTorch Version: {torch.__version__}\")\n",
+            "print(f\"CUDA Available: {torch.cuda.is_available()}\")\n",
+            "if torch.cuda.is_available():\n",
+            "    print(f\"GPU Model: {torch.cuda.get_device_name(0)}\")\n",
+            "    print(f\"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB\")\n",
+            "else:\n",
+            "    print(\"WARNING: No GPU detected! Please enable GPU accelerator in Notebook Settings.\")"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 2. Locate Input Dataset Paths\n",
+            "import os, glob\n",
+            "from pathlib import Path\n",
+            "\n",
+            "# Search for the dataset in /kaggle/input\n",
+            "input_dir = None\n",
+            "for p in glob.glob(\"/kaggle/input/**/retrieval_top_1000.parquet\", recursive=True):\n",
+            "    input_dir = Path(p).parent\n",
+            "    break\n",
+            "\n",
+            "if input_dir is None:\n",
+            "    # Fallback to direct check\n",
+            "    candidates = list(Path(\"/kaggle/input\").glob(\"*\"))\n",
+            "    raise FileNotFoundError(\n",
+            "        f\"Could not find retrieval_top_1000.parquet! Available in /kaggle/input: {candidates}. \"\n",
+            "        \"Please make sure you have added your uploaded dataset to this notebook.\"\n",
+            "    )\n",
+            "\n",
+            "chunks_dir = input_dir / \"chunks\"\n",
+            "bm25_file = input_dir / \"retrieval_top_1000.parquet\"\n",
+            "query_file = input_dir / \"query.parquet\"\n",
+            "wheels = list(input_dir.glob(\"*.whl\"))\n",
+            "\n",
+            "print(f\"Dataset Directory : {input_dir}\")\n",
+            "print(f\"Chunks Directory  : {chunks_dir} (exists: {chunks_dir.exists()})\")\n",
+            "print(f\"BM25 Hits File    : {bm25_file} (exists: {bm25_file.exists()})\")\n",
+            "print(f\"Query Parquet     : {query_file} (exists: {query_file.exists()})\")\n",
+            "if wheels:\n",
+            "    print(f\"Found Package Wheel: {wheels[0]}\")"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 3. Install Required Packages\n",
+            "if wheels:\n",
+            "    !pip install -q --no-deps {wheels[0]}\n",
+            "!pip install -q tantivy faiss-cpu sentence-transformers transformers pyyaml pyarrow\n",
+            "print(\"Environment dependencies installed successfully!\")"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 4. Generate Working Experiment Configuration\n",
+            "import yaml\n",
+            "\n",
+            "work_dir = Path(\"/kaggle/working/exp_a1\")\n",
+            "work_dir.mkdir(parents=True, exist_ok=True)\n",
+            "config_file = work_dir / \"config_kaggle.yaml\"\n",
+            "\n",
+            "config_data = {\n",
+            "    \"experiment_id\": \"exp_a1\",\n",
+            "    \"description\": \"ViBioMIR 2026 Experiment A1 on Kaggle GPU\",\n",
+            "    \"chunking\": {\n",
+            "        \"strategy\": \"sentence_aware\",\n",
+            "        \"target_tokens\": 400,\n",
+            "        \"max_total_tokens\": 512,\n",
+            "        \"overlap_tokens\": 48,\n",
+            "        \"chunking_version\": \"a1\",\n",
+            "    },\n",
+            "    \"model\": {\n",
+            "        \"model_id\": \"Qwen/Qwen3-Embedding-0.6B\",\n",
+            "        \"local_model_path\": None,\n",
+            "        \"offline_mode\": False,\n",
+            "        \"device\": \"cuda\",\n",
+            "        \"precision\": \"float16\",\n",
+            "        \"batch_size\": 64,\n",
+            "        \"max_length\": 512,\n",
+            "        \"query_instruction\": \"Instruct: Given a web search query, retrieve relevant passages that answer the query\\nQuery: \",\n",
+            "        \"pooling_method\": \"last_token\",\n",
+            "        \"normalize\": True,\n",
+            "    },\n",
+            "    \"index\": {\n",
+            "        \"index_type\": \"flat_ip\",\n",
+            "        \"use_faiss\": True,\n",
+            "        \"metric\": \"cosine\",\n",
+            "    },\n",
+            "    \"retrieval\": {\n",
+            "        \"dense_chunk_top_k\": 500,\n",
+            "        \"document_aggregation\": \"max\",\n",
+            "        \"top_k_docs\": 1000,\n",
+            "    },\n",
+            "    \"fusion\": {\n",
+            "        \"rrf_k\": 60,\n",
+            "        \"bm25_weight\": 1.0,\n",
+            "        \"dense_weight\": 1.0,\n",
+            "        \"top_k\": 1000,\n",
+            "    },\n",
+            "    \"paths\": {\n",
+            "        \"candidate_doc_ids\": \"\",\n",
+            "        \"bm25_hits\": str(bm25_file),\n",
+            "        \"queries\": str(query_file),\n",
+            "        \"output_dir\": str(work_dir),\n",
+            "    },\n",
+            "    \"submission\": {\n",
+            "        \"top_docs\": 10,\n",
+            "        \"top_chunks\": 10,\n",
+            "        \"chunks_per_doc\": 1,\n",
+            "        \"include_chunk_order\": False,\n",
+            "        \"doc_id_type\": \"int\",\n",
+            "        \"output_filename\": \"submission.json\",\n",
+            "        \"zip_filename\": \"submission.zip\",\n",
+            "    }\n",
+            "}\n",
+            "\n",
+            "with open(config_file, \"w\", encoding=\"utf-8\") as f:\n",
+            "    yaml.dump(config_data, f, default_flow_style=False)\n",
+            "\n",
+            "print(f\"Configuration saved to: {config_file}\")"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 5. Step 1: Run Dense Embedding on Chunks (approx. 10-15 mins)\n",
+            "!vibiomir-retrieval embed \\\n",
+            "    --config /kaggle/working/exp_a1/config_kaggle.yaml \\\n",
+            "    --chunks-dir {chunks_dir} \\\n",
+            "    --batch-size 64 \\\n",
+            "    --precision float16 \\\n",
+            "    --device cuda"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 6. Step 2: Build FAISS Dense Vector Index\n",
+            "!vibiomir-retrieval build-dense-index \\\n",
+            "    --config /kaggle/working/exp_a1/config_kaggle.yaml"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 7. Step 3: Run Dense Search on 1,200 Queries\n",
+            "!vibiomir-retrieval dense-search \\\n",
+            "    --config /kaggle/working/exp_a1/config_kaggle.yaml \\\n",
+            "    --query-path {query_file} \\\n",
+            "    --device cuda"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 8. Step 4: Reciprocal Rank Fusion (BM25 + Dense)\n",
+            "!vibiomir-retrieval fuse \\\n",
+            "    --config /kaggle/working/exp_a1/config_kaggle.yaml \\\n",
+            "    --bm25-file {bm25_file}"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 9. Step 5: Export Official ViBioMIR Submission (JSON + ZIP)\n",
+            "!vibiomir-retrieval export-submission \\\n",
+            "    --config /kaggle/working/exp_a1/config_kaggle.yaml \\\n",
+            "    --chunks-dir {chunks_dir} \\\n",
+            "    --query-path {query_file} \\\n",
+            "    --top-docs 10 \\\n",
+            "    --top-chunks 10"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 10. Step 6: Validate Submission Format\n",
+            "!vibiomir-retrieval validate-submission \\\n",
+            "    --submission /kaggle/working/exp_a1/submission/submission.zip \\\n",
+            "    --query-path {query_file}"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "# 11. Step 7: Package Vector Embeddings & Outputs for Download to Local\n",
+            "import os, shutil\n",
+            "from pathlib import Path\n",
+            "\n",
+            "work_dir = Path(\"/kaggle/working\")\n",
+            "sub_zip = work_dir / \"exp_a1/submission/submission.zip\"\n",
+            "if sub_zip.exists():\n",
+            "    shutil.copy(sub_zip, work_dir / \"submission.zip\")\n",
+            "    print(\"Copied submission.zip to root output directory!\")\n",
+            "\n",
+            "!cd /kaggle/working && zip -r -q vibiomir_vectors_exp_a1.zip exp_a1/embeddings exp_a1/index exp_a1/retrieval exp_a1/fusion\n",
+            "\n",
+            "print(\"=== FINISHED ALL TASKS! ===\")\n",
+            "print(\"Outputs created in /kaggle/working/:\")\n",
+            "!ls -lh /kaggle/working/*.zip"
+        ]
+    }
+]
+
+nb = {
+    "cells": cells,
+    "metadata": {
+        "accelerator": "GPU",
+        "colab": {"provenance": []},
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "codemirror_mode": {"name": "ipython", "version": 3},
+            "file_extension": ".py",
+            "mimetype": "text/x-python",
+            "name": "python",
+            "nbformat": 4,
+            "nbformat_minor": 2,
+            "version": "3.10.12"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 2
+}
+
+output_path = Path("notebooks/vibiomir_kaggle_exp_a1.ipynb")
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump(nb, f, indent=2)
+
+print(f"Generated notebook at: {output_path.resolve()}")

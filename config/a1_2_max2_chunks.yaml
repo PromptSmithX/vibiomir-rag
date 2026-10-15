@@ -1,0 +1,36 @@
+# ==============================================================================
+# ViBioMIR Experiment A1.2: Optimize Chunk Selection (Max 2 Chunks per Document)
+# ==============================================================================
+
+experiment:
+  name: a1_2_max2_chunks
+
+experiment_id: a1_2_max2_chunks
+description: "Experiment A1.2: Sentence-aware chunking + Dense RRF with max 2 chunks per document"
+
+chunk_selection:
+  max_chunks_per_document: 2
+  preserve_original_text: true
+  top_k: 100
+  deduplicate: true
+  dedup_threshold: 0.85
+  filter_boilerplate: true
+  min_chunk_chars: 30
+
+submission:
+  top_docs: 100
+  top_chunks: 100
+  chunks_per_doc: 2
+  include_chunk_order: false
+  doc_id_type: int
+  output_filename: "submission.json"
+  zip_filename: "submission.zip"
+  output_dir: "data/experiments/a1_2_max2_chunks/submission"
+
+paths:
+  candidate_doc_ids: "data/retrieval/candidates/candidate_doc_ids.parquet"
+  bm25_hits: "data/retrieval/candidates/retrieval_top_1000.parquet"
+  queries: "data/source/query.parquet"
+  output_dir: "data/experiments/exp_a1"
+  fusion_hits: "data/experiments/exp_a1/fusion/rrf_fusion_top_1000.parquet"
+  chunks_dir: "data/experiments/exp_a1/chunks"

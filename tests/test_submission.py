@@ -1,11 +1,13 @@
 """Unit tests for ViBioMIR Official Submission Exporter and Validator.
 
 Covers:
-- Valid submission schema
-- Missing and duplicate queries
+- Valid submission schema with strictly integer document IDs
+- Rejection of string document IDs (BTC official requirement)
+- Detection of duplicate document IDs within a query
+- Missing and duplicate queries against official dataset
 - Invalid field types
-- Empty result arrays
-- Forbidden metadata fields
+- Empty result arrays for zero-hit queries
+- Forbidden metadata fields (score, rank, etc.)
 - Source text vs embedding text leakage
 - ZIP structure and root-only enforcement
 - Document ID verification against corpus
@@ -21,59 +23,19 @@ import pyarrow.parquet as pq
 import pytest
 
 from retrieval.dense.config import SubmissionConfig
+from retrieval.submission.chunk_selector import ChunkSelectionConfig, ChunkSelector
 from retrieval.submission.chunk_store import ChunkStore
 from retrieval.submission.exporter import SubmissionExporter
 from retrieval.submission.validator import SubmissionValidator, ValidationResult
 
 
 # ---------------------------------------------------------------------------
-# 1. Valid Submission
+# 1. Valid Submission with Integer Document IDs
 # ---------------------------------------------------------------------------
 
 
 def test_valid_submission_passes():
-    """Verify that a compliant submission structure passes all validator checks."""
-    valid_data = [
-        {
-            "id": 1,
-            "relevant_docs": ["1001", "1002"],
-            "relevant_chunks": [
-                {
-                    "doc_id": "1001",
-                    "chunk_text": "Thuốc kháng sinh được chỉ định điều trị nhiễm khuẩn.",
-                    "chunk_order": 0,
-                },
-                {
-                    "doc_id": "1002",
-                    "chunk_text": "Triệu chứng thường gặp bao gồm sốt cao và ho khan.",
-                    "chunk_order": 1,
-                },
-            ],
-        },
-        {
-            "id": 2,
-            "relevant_docs": ["2001"],
-            "relevant_chunks": [
-                {
-                    "doc_id": "2001",
-                    "chunk_text": "Bệnh nhân cần uống nhiều nước và nghỉ ngơi hợp lý.",
-                }
-            ],
-        },
-    ]
-
-    validator = SubmissionValidator()
-    result = validator.validate_json(valid_data)
-
-    assert result.is_valid is True
-    assert len(result.errors) == 0
-    assert result.summary["total_queries"] == 2
-    assert result.summary["total_relevant_docs"] == 3
-    assert result.summary["total_relevant_chunks"] == 3
-
-
-def test_valid_submission_with_integer_doc_ids_passes():
-    """Verify that submissions with integer doc_id pass validation."""
+    """Verify that a compliant submission structure with integer doc_ids passes all checks."""
     valid_data = [
         {
             "id": 1,
@@ -90,12 +52,77 @@ def test_valid_submission_with_integer_doc_ids_passes():
                     "chunk_order": 1,
                 },
             ],
-        }
+        },
+        {
+            "id": 2,
+            "relevant_docs": [2001],
+            "relevant_chunks": [
+                {
+                    "doc_id": 2001,
+                    "chunk_text": "Bệnh nhân cần uống nhiều nước và nghỉ ngơi hợp lý.",
+                }
+            ],
+        },
     ]
+
     validator = SubmissionValidator()
     result = validator.validate_json(valid_data)
+
     assert result.is_valid is True
     assert len(result.errors) == 0
+    assert result.summary["total_queries"] == 2
+    assert result.summary["total_relevant_docs"] == 3
+    assert result.summary["total_relevant_chunks"] == 3
+    assert "Strictly integer" in result.summary["doc_id_format"]
+
+
+def test_string_doc_id_fails_validation():
+    """Verify that string document IDs are strictly rejected as invalid (BTC requirement)."""
+    validator = SubmissionValidator()
+
+    # Case A: String in relevant_docs
+    string_docs_data = [
+        {
+            "id": 1,
+            "relevant_docs": ["1001", "1002"],  # INVALID: must be int
+            "relevant_chunks": [],
+        }
+    ]
+    res_a = validator.validate_json(string_docs_data)
+    assert res_a.is_valid is False
+    assert any("must be integer" in err for err in res_a.errors)
+
+    # Case B: String doc_id in relevant_chunks
+    string_chunk_data = [
+        {
+            "id": 1,
+            "relevant_docs": [1001],
+            "relevant_chunks": [
+                {
+                    "doc_id": "1001",  # INVALID: must be int
+                    "chunk_text": "Nội dung hợp lệ.",
+                }
+            ],
+        }
+    ]
+    res_b = validator.validate_json(string_chunk_data)
+    assert res_b.is_valid is False
+    assert any("'doc_id' must be integer" in err for err in res_b.errors)
+
+
+def test_duplicate_doc_ids_in_query_fails():
+    """Verify that duplicate doc_ids within relevant_docs trigger an error."""
+    validator = SubmissionValidator()
+    dup_doc_data = [
+        {
+            "id": 1,
+            "relevant_docs": [1001, 1002, 1001],  # Duplicate 1001
+            "relevant_chunks": [],
+        }
+    ]
+    res = validator.validate_json(dup_doc_data)
+    assert res.is_valid is False
+    assert any("duplicate doc_id" in err.lower() for err in res.errors)
 
 
 # ---------------------------------------------------------------------------
@@ -117,8 +144,8 @@ def test_missing_query_fails(tmp_path: Path):
 
     # Submission only contains queries 1 and 2 (missing 3)
     incomplete_data = [
-        {"id": 1, "relevant_docs": ["10"], "relevant_chunks": []},
-        {"id": 2, "relevant_docs": ["20"], "relevant_chunks": []},
+        {"id": 1, "relevant_docs": [10], "relevant_chunks": []},
+        {"id": 2, "relevant_docs": [20], "relevant_chunks": []},
     ]
 
     validator = SubmissionValidator(query_path=q_file)
@@ -131,16 +158,16 @@ def test_missing_query_fails(tmp_path: Path):
 def test_duplicate_query_fails():
     """Verify that duplicate query IDs in submission trigger a validation error."""
     dup_data = [
-        {"id": 10, "relevant_docs": ["1"], "relevant_chunks": []},
-        {"id": 20, "relevant_docs": ["2"], "relevant_chunks": []},
-        {"id": 10, "relevant_docs": ["3"], "relevant_chunks": []},  # Duplicate ID 10
+        {"id": 10, "relevant_docs": [1], "relevant_chunks": []},
+        {"id": 20, "relevant_docs": [2], "relevant_chunks": []},
+        {"id": 10, "relevant_docs": [3], "relevant_chunks": []},  # Duplicate ID 10
     ]
 
     validator = SubmissionValidator()
     result = validator.validate_json(dup_data)
 
     assert result.is_valid is False
-    assert any("duplicate query ID" in err.lower() for err in result.errors)
+    assert any("duplicate query id" in err.lower() for err in result.errors)
 
 
 # ---------------------------------------------------------------------------
@@ -154,19 +181,19 @@ def test_invalid_field_types():
 
     # Case A: id is string instead of int
     res_a = validator.validate_json(
-        [{"id": "1", "relevant_docs": ["10"], "relevant_chunks": []}]
+        [{"id": "1", "relevant_docs": [10], "relevant_chunks": []}]
     )
     assert res_a.is_valid is False
     assert any("invalid 'id' type" in err for err in res_a.errors)
 
-    # Case B: relevant_docs contains invalid type (boolean / None)
+    # Case B: relevant_docs contains boolean
     res_b = validator.validate_json(
         [{"id": 1, "relevant_docs": [True], "relevant_chunks": []}]
     )
     assert res_b.is_valid is False
-    assert any("must be int or string" in err for err in res_b.errors)
+    assert any("must be integer" in err for err in res_b.errors)
 
-    # Case C: chunk doc_id is invalid type (boolean)
+    # Case C: chunk doc_id is boolean
     res_c = validator.validate_json(
         [
             {
@@ -177,16 +204,16 @@ def test_invalid_field_types():
         ]
     )
     assert res_c.is_valid is False
-    assert any("'doc_id' must be int or string" in err for err in res_c.errors)
+    assert any("'doc_id' must be integer" in err for err in res_c.errors)
 
     # Case D: chunk_order is negative
     res_d = validator.validate_json(
         [
             {
                 "id": 1,
-                "relevant_docs": ["10"],
+                "relevant_docs": [10],
                 "relevant_chunks": [
-                    {"doc_id": "10", "chunk_text": "valid text", "chunk_order": -1}
+                    {"doc_id": 10, "chunk_text": "valid text", "chunk_order": -1}
                 ],
             }
         ]
@@ -206,8 +233,8 @@ def test_empty_result_arrays_valid():
         {"id": 101, "relevant_docs": [], "relevant_chunks": []},
         {
             "id": 102,
-            "relevant_docs": ["55"],
-            "relevant_chunks": [{"doc_id": "55", "chunk_text": "Sample content."}],
+            "relevant_docs": [55],
+            "relevant_chunks": [{"doc_id": 55, "chunk_text": "Sample content."}],
         },
     ]
 
@@ -230,10 +257,10 @@ def test_forbidden_metadata_fields():
             "id": 1,
             "score": 0.985,  # Forbidden
             "rank": 1,  # Forbidden
-            "relevant_docs": ["100"],
+            "relevant_docs": [100],
             "relevant_chunks": [
                 {
-                    "doc_id": "100",
+                    "doc_id": 100,
                     "chunk_text": "Valid text.",
                     "score": 0.95,  # Forbidden
                 }
@@ -262,10 +289,10 @@ def test_source_text_vs_embedding_text():
     leaked_title_data = [
         {
             "id": 1,
-            "relevant_docs": ["10"],
+            "relevant_docs": [10],
             "relevant_chunks": [
                 {
-                    "doc_id": "10",
+                    "doc_id": 10,
                     "chunk_text": "[Tiêu đề: Huyết áp cao] Đây là nội dung bài viết.",
                 }
             ],
@@ -279,10 +306,10 @@ def test_source_text_vs_embedding_text():
     leaked_prompt_data = [
         {
             "id": 2,
-            "relevant_docs": ["20"],
+            "relevant_docs": [20],
             "relevant_chunks": [
                 {
-                    "doc_id": "20",
+                    "doc_id": 20,
                     "chunk_text": "Instruct: Given a web search query\nQuery: Triệu chứng cảm cúm",
                 }
             ],
@@ -300,7 +327,7 @@ def test_source_text_vs_embedding_text():
 
 def test_zip_structure_valid(tmp_path: Path):
     """Verify that a ZIP with strictly one JSON at root passes validation."""
-    valid_data = [{"id": 1, "relevant_docs": ["10"], "relevant_chunks": []}]
+    valid_data = [{"id": 1, "relevant_docs": [10], "relevant_chunks": []}]
     json_path = tmp_path / "submission.json"
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(valid_data, f)
@@ -370,7 +397,7 @@ def test_corpus_doc_id_warning(tmp_path: Path):
     data = [
         {
             "id": 1,
-            "relevant_docs": ["100", "9999"],  # 9999 not in corpus
+            "relevant_docs": [100, 9999],  # 9999 not in corpus
             "relevant_chunks": [],
         }
     ]
@@ -382,7 +409,7 @@ def test_corpus_doc_id_warning(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# 9. End-to-End Synthetic Export and Validation
+# 9. End-to-End Synthetic Export and Validation with Integer IDs
 # ---------------------------------------------------------------------------
 
 
@@ -465,11 +492,13 @@ def test_exporter_end_to_end_synthetic(tmp_path: Path):
     with open(out_json, encoding="utf-8") as f:
         exported_data = json.load(f)
 
-    # Check query 10
+    # Check query 10: ensure STRICT INTEGER doc_ids
     q10 = next(item for item in exported_data if item["id"] == 10)
-    assert q10["relevant_docs"] == ["100", "200"]
+    assert q10["relevant_docs"] == [100, 200]
+    assert all(isinstance(d, int) and not isinstance(d, bool) for d in q10["relevant_docs"])
     assert len(q10["relevant_chunks"]) == 2
-    assert q10["relevant_chunks"][0]["doc_id"] == "100"
+    assert q10["relevant_chunks"][0]["doc_id"] == 100
+    assert isinstance(q10["relevant_chunks"][0]["doc_id"], int)
     assert q10["relevant_chunks"][0]["chunk_text"] == "Nguyên nhân huyết áp cao do di truyền và lối sống."
     assert q10["relevant_chunks"][0]["chunk_order"] == 0
 

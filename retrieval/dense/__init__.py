@@ -3,12 +3,14 @@
 from retrieval.dense.candidate_loader import CandidateChunkingPipeline, load_candidate_doc_ids
 from retrieval.dense.chunker import BaseChunker, ChunkerRegistry, SentenceAwareChunker
 from retrieval.dense.config import (
+    ChunkSelectionConfig,
     ChunkingConfig,
     DenseRetrievalConfig,
     ExperimentConfig,
     FusionConfig,
     IndexConfig,
     ModelConfig,
+    PassageExpansionConfig,
 )
 from retrieval.dense.embedder import DenseEmbedder
 from retrieval.dense.fusion import ReciprocalRankFusion
@@ -19,6 +21,7 @@ from retrieval.dense.pipeline import ExperimentAPipeline
 __all__ = [
     "BaseChunker",
     "CandidateChunkingPipeline",
+    "ChunkSelectionConfig",
     "ChunkerRegistry",
     "ChunkingConfig",
     "DenseEmbedder",
@@ -33,7 +36,9 @@ __all__ = [
     "ModelConfig",
     "ModelMetadata",
     "NumpyVectorIndex",
+    "PassageExpansionConfig",
     "ReciprocalRankFusion",
     "SentenceAwareChunker",
     "load_candidate_doc_ids",
 ]
+

@@ -1,11 +1,17 @@
 """Search engine module executing BM25 queries against the disk index."""
 
+from __future__ import annotations
+
 import logging
 import time
 from pathlib import Path
 
 import pyarrow.parquet as pq
-import tantivy
+
+try:
+    import tantivy
+except ImportError:
+    tantivy = None
 
 from retrieval.models import QueryItem, RetrievalHit
 from retrieval.tokenizer import MultilingualMedicalTokenizer
@@ -28,6 +34,8 @@ class BM25Searcher:
         self.title_boost = title_boost
         self.tokenizer = tokenizer or MultilingualMedicalTokenizer()
 
+        if tantivy is None:
+            raise ImportError("tantivy is required for BM25Searcher. Install via `pip install tantivy`.")
         self._index = tantivy.Index.open(str(self.index_dir))
         self._setup_analyzer()
         self._searcher = self._index.searcher()

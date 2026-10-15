@@ -1,7 +1,7 @@
 """Independent Submission Validator for ViBioMIR competition submissions.
 
 Performs comprehensive pre-flight verification of submission.json and
-submission.zip before uploading to the evaluation portal.
+submission.zip before uploading to the official BTC evaluation portal.
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ class ValidationResult:
     def to_report(self) -> str:
         """Render a formatted human-readable validation report."""
         lines: list[str] = []
-        lines.append("=" * 65)
+        lines.append("=" * 68)
         lines.append("=== VIBIOMIR SUBMISSION VALIDATION REPORT ===")
-        lines.append("=" * 65)
+        lines.append("=" * 68)
 
         status_str = "PASSED [VALID SUBMISSION]" if self.is_valid else "FAILED [INVALID SUBMISSION]"
         lines.append(f"Overall Status : {status_str}")
@@ -58,7 +58,7 @@ class ValidationResult:
             if len(self.warnings) > 20:
                 lines.append(f"  ... and {len(self.warnings) - 20} more warnings.")
 
-        lines.append("=" * 65)
+        lines.append("=" * 68)
         return "\n".join(lines)
 
 
@@ -95,36 +95,60 @@ class SubmissionValidator:
         "[Tiêu đề:",
         "[Mục:",
         "Query:",
+        "pubmed:",
+        "PubMed:",
+        "PUBMED:",
     )
 
     def __init__(
         self,
         query_path: Path | str | None = None,
         corpus_path: Path | str | None = None,
+        max_chunks_per_doc: int | None = None,
     ) -> None:
         self.query_path = Path(query_path) if query_path else None
         self.corpus_path = Path(corpus_path) if corpus_path else None
+        self.max_chunks_per_doc = max_chunks_per_doc
 
-    def validate_file(self, target_path: Path | str) -> ValidationResult:
+    def validate_file(
+        self,
+        target_path: Path | str,
+        max_chunks_per_doc: int | None = None,
+    ) -> ValidationResult:
         """Validate either a submission.json or a submission.zip file."""
         p = Path(target_path)
         if not p.exists():
+            hint = ""
+            if p.suffix.lower() == ".zip":
+                json_candidate = p.with_suffix(".json")
+                if json_candidate.exists():
+                    hint = (
+                        f"\n  [HINT] Found JSON file at '{json_candidate.name}'. You can validate it directly:\n"
+                        f"         uv run python -m retrieval.cli validate-submission --submission {json_candidate} ...\n"
+                        f"         Or package it into ZIP using:\n"
+                        f"         uv run python -m retrieval.cli export-submission --config config/a1_2_max2_chunks.yaml --pack-only"
+                    )
             return ValidationResult(
                 is_valid=False,
-                errors=[f"Target submission file does not exist: {p.resolve()}"],
+                errors=[f"Target submission file does not exist: {p.resolve()}{hint}"],
             )
 
+        eff_max_cap = max_chunks_per_doc if max_chunks_per_doc is not None else self.max_chunks_per_doc
         if p.suffix.lower() == ".zip":
-            return self.validate_zip(p)
+            return self.validate_zip(p, max_chunks_per_doc=eff_max_cap)
         elif p.suffix.lower() == ".json":
-            return self.validate_json_file(p)
+            return self.validate_json_file(p, max_chunks_per_doc=eff_max_cap)
         else:
             return ValidationResult(
                 is_valid=False,
                 errors=[f"Unsupported submission file format '{p.suffix}'. Expected .json or .zip"],
             )
 
-    def validate_zip(self, zip_path: Path | str) -> ValidationResult:
+    def validate_zip(
+        self,
+        zip_path: Path | str,
+        max_chunks_per_doc: int | None = None,
+    ) -> ValidationResult:
         """Validate submission.zip structure and inner submission.json."""
         p = Path(zip_path)
         errors: list[str] = []
@@ -185,7 +209,7 @@ class SubmissionValidator:
             )
 
         # Validate inner JSON content
-        content_res = self.validate_json(raw_data)
+        content_res = self.validate_json(raw_data, max_chunks_per_doc=max_chunks_per_doc)
         all_errors = errors + content_res.errors
         all_warnings = warnings + content_res.warnings
 
@@ -200,7 +224,11 @@ class SubmissionValidator:
             summary=summary,
         )
 
-    def validate_json_file(self, json_path: Path | str) -> ValidationResult:
+    def validate_json_file(
+        self,
+        json_path: Path | str,
+        max_chunks_per_doc: int | None = None,
+    ) -> ValidationResult:
         """Validate submission JSON directly from disk."""
         p = Path(json_path)
         try:
@@ -212,12 +240,27 @@ class SubmissionValidator:
                 errors=[f"Failed to parse JSON file '{p.resolve()}': {e}"],
             )
 
-        res = self.validate_json(data)
+        res = self.validate_json(data, max_chunks_per_doc=max_chunks_per_doc)
         res.summary["json_file"] = p.name
         return res
 
-    def validate_json(self, data: Any) -> ValidationResult:
-        """Validate parsed submission JSON data against official schema rules."""
+    def validate_json(
+        self,
+        data: Any,
+        max_chunks_per_doc: int | None = None,
+    ) -> ValidationResult:
+        """Validate parsed submission JSON data against official BTC schema rules.
+
+        MANDATORY RULES:
+        1. Root must be a list of dicts.
+        2. 'id' must be integer.
+        3. 'relevant_docs' must be list of integers (NO STRINGS ALLOWED).
+        4. 'relevant_docs' must not have duplicate document IDs within any query.
+        5. 'relevant_chunks[].doc_id' must be integer (NO STRINGS ALLOWED).
+        6. 'relevant_chunks[].chunk_text' must be string.
+        7. No forbidden metadata fields (score, rank, etc.).
+        8. No leaked model prompt or title prefixes.
+        """
         errors: list[str] = []
         warnings: list[str] = []
 
@@ -245,6 +288,8 @@ class SubmissionValidator:
         docs_per_query_counts: list[int] = []
         chunks_per_query_counts: list[int] = []
         prefix_leak_count = 0
+        string_doc_id_count = 0
+        duplicate_docs_queries = 0
 
         # Check each record
         for idx, item in enumerate(data):
@@ -260,7 +305,9 @@ class SubmissionValidator:
             q_id = item["id"]
             # Rule: id must be integer
             if not isinstance(q_id, int) or isinstance(q_id, bool):
-                errors.append(f"Item at index {idx} has invalid 'id' type: expected int, got {type(q_id).__name__} ({q_id!r})")
+                errors.append(
+                    f"Item at index {idx} has invalid 'id' type: expected int, got {type(q_id).__name__} ({q_id!r})"
+                )
                 continue
 
             if q_id in seen_query_ids:
@@ -286,10 +333,21 @@ class SubmissionValidator:
                     errors.append(f"Query {q_id}: 'relevant_docs' must be a list, got {type(rel_docs).__name__}")
                     rel_docs = []
                 else:
+                    # Check duplicate doc_ids
+                    if len(rel_docs) != len(set(rel_docs)):
+                        duplicate_docs_queries += 1
+                        errors.append(
+                            f"Query {q_id}: 'relevant_docs' contains {len(rel_docs) - len(set(rel_docs))} "
+                            f"duplicate doc_id(s)"
+                        )
+
                     for d_idx, doc in enumerate(rel_docs):
-                        if not isinstance(doc, (int, str)) or isinstance(doc, bool):
+                        # CRITICAL RULE: doc_id MUST be integer, not string or bool
+                        if not isinstance(doc, int) or isinstance(doc, bool):
+                            string_doc_id_count += 1
                             errors.append(
-                                f"Query {q_id}: relevant_docs[{d_idx}] must be int or string, got {type(doc).__name__} ({doc!r})"
+                                f"Query {q_id}: relevant_docs[{d_idx}] must be integer (BTC official requirement), "
+                                f"got {type(doc).__name__} ({doc!r})"
                             )
 
             # Check relevant_chunks
@@ -303,6 +361,7 @@ class SubmissionValidator:
                     rel_chunks = []
                 else:
                     rel_doc_set = set(rel_docs) if isinstance(rel_docs, list) else set()
+                    doc_chunk_counts: dict[int, int] = {}
 
                     for c_idx, chunk in enumerate(rel_chunks):
                         if not isinstance(chunk, dict):
@@ -316,19 +375,21 @@ class SubmissionValidator:
                         if chunk_extra:
                             errors.append(f"Query {q_id}, chunk {c_idx} contains forbidden fields: {chunk_extra}")
 
-                        # Check doc_id
+                        # Check doc_id in chunk: MUST be integer
                         if "doc_id" not in chunk:
                             errors.append(f"Query {q_id}, chunk {c_idx} missing 'doc_id'")
-                        elif not isinstance(chunk["doc_id"], (int, str)) or isinstance(chunk["doc_id"], bool):
+                        elif not isinstance(chunk["doc_id"], int) or isinstance(chunk["doc_id"], bool):
+                            string_doc_id_count += 1
                             errors.append(
-                                f"Query {q_id}, chunk {c_idx} 'doc_id' must be int or string, got {type(chunk['doc_id']).__name__}"
+                                f"Query {q_id}, chunk {c_idx} 'doc_id' must be integer (BTC official requirement), "
+                                f"got {type(chunk['doc_id']).__name__} ({chunk['doc_id']!r})"
                             )
-                        elif rel_doc_set:
-                            cid = chunk["doc_id"]
-                            str_rel_set = {str(x) for x in rel_doc_set}
-                            if str(cid) not in str_rel_set:
+                        else:
+                            cdid = chunk["doc_id"]
+                            doc_chunk_counts[cdid] = doc_chunk_counts.get(cdid, 0) + 1
+                            if rel_doc_set and cdid not in rel_doc_set:
                                 warnings.append(
-                                    f"Query {q_id}: chunk doc_id '{cid}' is not in relevant_docs"
+                                    f"Query {q_id}: chunk doc_id {cdid} is not in relevant_docs"
                                 )
 
                         # Check chunk_text
@@ -343,7 +404,7 @@ class SubmissionValidator:
                             if not ctext:
                                 warnings.append(f"Query {q_id}, chunk {c_idx} has empty chunk_text")
 
-                            # Check for leaked model instructions or [Tiêu đề: ...]
+                            # Check for leaked model instructions, [Tiêu đề: ...], or pubmed:
                             for pfx in self.FORBIDDEN_TEXT_PREFIXES:
                                 if ctext.startswith(pfx):
                                     prefix_leak_count += 1
@@ -358,6 +419,15 @@ class SubmissionValidator:
                             if not isinstance(co, int) or isinstance(co, bool) or co < 0:
                                 errors.append(
                                     f"Query {q_id}, chunk {c_idx}: chunk_order must be non-negative int, got {co!r}"
+                                )
+
+                    eff_cap = max_chunks_per_doc if max_chunks_per_doc is not None else self.max_chunks_per_doc
+                    if eff_cap is not None:
+                        for did, count in doc_chunk_counts.items():
+                            if count > eff_cap:
+                                errors.append(
+                                    f"Query {q_id}: doc_id {did} has {count} chunks, "
+                                    f"exceeding max limit of {eff_cap} chunks/doc"
                                 )
 
             if len(rel_docs) == 0 and len(rel_chunks) == 0:
@@ -405,10 +475,8 @@ class SubmissionValidator:
                 all_submission_doc_ids: set[int] = set()
                 for item in data:
                     for d in item.get("relevant_docs", []):
-                        try:
-                            all_submission_doc_ids.add(int(d))
-                        except (ValueError, TypeError):
-                            pass
+                        if isinstance(d, int) and not isinstance(d, bool):
+                            all_submission_doc_ids.add(d)
 
                 invalid_docs = all_submission_doc_ids - corpus_doc_ids
                 if invalid_docs:
@@ -424,18 +492,23 @@ class SubmissionValidator:
         avg_chunks = round(total_chunks / total_queries, 2) if total_queries > 0 else 0.0
         max_docs = max(docs_per_query_counts) if docs_per_query_counts else 0
         min_docs = min(docs_per_query_counts) if docs_per_query_counts else 0
+        max_chunks = max(chunks_per_query_counts) if chunks_per_query_counts else 0
+        min_chunks = min(chunks_per_query_counts) if chunks_per_query_counts else 0
 
         summary_data: dict[str, Any] = {
             "total_queries": total_queries,
             "unique_query_ids": len(seen_query_ids),
             "duplicate_queries": len(duplicate_query_ids),
+            "doc_id_format": "Strictly integer (BTC compliant)" if string_doc_id_count == 0 else "INVALID: Contains string IDs",
             "total_relevant_docs": total_docs,
             "avg_docs_per_query": avg_docs,
             "min_max_docs_range": f"[{min_docs}, {max_docs}]",
             "total_relevant_chunks": total_chunks,
             "avg_chunks_per_query": avg_chunks,
+            "min_max_chunks_range": f"[{min_chunks}, {max_chunks}]",
             "empty_queries_count": empty_queries_count,
             "prefix_leak_violations": prefix_leak_count,
+            "duplicate_docs_in_query_violations": duplicate_docs_queries,
             "schema_errors_count": len(errors),
             "warnings_count": len(warnings),
         }

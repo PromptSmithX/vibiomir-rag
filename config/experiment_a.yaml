@@ -1,0 +1,62 @@
+# ==============================================================================
+# ViBioMIR Experiment A1: Sentence-Aware Chunking + Qwen3-Embedding-0.6B + RRF
+# ==============================================================================
+
+experiment_id: exp_a1
+description: "Experiment A1: Sentence-aware token-budget chunking with Qwen3-Embedding-0.6B and BM25 RRF fusion"
+
+chunking:
+  strategy: sentence_aware
+  target_tokens: 400
+  max_total_tokens: 512
+  overlap_tokens: 48
+  include_document_title: true
+  include_heading_if_available: true
+  max_title_tokens: 64
+  special_tokens_reserve: 4
+  chunking_version: a1
+
+model:
+  model_id: "Qwen/Qwen3-Embedding-0.6B"
+  local_model_path: "models/Qwen3-Embedding-0.6B"
+  offline_mode: false
+  device: "cuda"            # 'cuda', 'cpu', or 'auto'
+  precision: "float16"      # 'float16', 'bfloat16', or 'float32' (use float16 for RTX 3050 4GB)
+  batch_size: 16            # Conservative batch size suited for 4GB VRAM
+  max_length: 512
+  query_instruction: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
+  pooling_method: "last_token"
+  normalize: true
+
+index:
+  index_type: "flat_ip"     # 'flat_ip' for exact inner product / cosine similarity
+  use_faiss: true           # Uses FAISS if installed, automatically falls back to NumPy if not
+  metric: "cosine"
+
+retrieval:
+  dense_chunk_top_k: 500    # Top-K candidate chunks retrieved per query
+  document_aggregation: "max"  # Score aggregation per doc_id: 'max'
+  top_k_docs: 1000          # Top-K final documents preserved per query
+
+fusion:
+  rrf_k: 60                 # Standard RRF constant
+  bm25_weight: 1.0          # Weight for BM25 ranking
+  dense_weight: 1.0         # Weight for Dense ranking
+  top_k: 1000               # Top-K documents in final fused ranking
+
+paths:
+  candidate_doc_ids: "data/retrieval/candidates/candidate_doc_ids.parquet"
+  bm25_hits: "data/retrieval/candidates/retrieval_top_1000.parquet"
+  queries: "data/source/query.parquet"
+  output_dir: "data/experiments/exp_a1"
+
+submission:
+  top_docs: 10              # Top-K documents per query in official submission
+  top_chunks: 10            # Top-K chunks per query in official submission
+  chunks_per_doc: 1         # Best chunks to include per document
+  include_chunk_order: false # Optional chunk_order field (default: false)
+  doc_id_type: int          # 'int' (recommended for official evaluator) or 'str'
+  output_filename: "submission.json"
+  zip_filename: "submission.zip"
+  output_dir: "data/experiments/exp_a1/submission"
+

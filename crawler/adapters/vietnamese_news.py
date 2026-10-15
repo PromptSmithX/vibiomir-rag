@@ -27,8 +27,12 @@ class VietnameseNewsAdapter:
 
     def adapt_request(self, url: str) -> tuple[str, dict[str, str] | None]:
         host = (urlsplit(url).hostname or "").lower()
-        if host == "vov.vn" or host.endswith(".vov.vn"):
+        if host in ("vov.vn", "youmed.vn") or host.endswith((".vov.vn", ".youmed.vn")):
             return url, _CURL_HEADERS
+        if host in ("laodong.vn", "www.laodong.vn") or host.endswith(".laodong.vn"):
+            headers = dict(_BROWSER_HEADERS)
+            headers["Cookie"] = "D1N=58f1a2844da46a7ad0abbf8f84f0f982"
+            return url, headers
         return url, _BROWSER_HEADERS
 
     def is_bot_challenge(self, final_url: str | None, status: int | None = None) -> bool:

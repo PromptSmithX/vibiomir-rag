@@ -14,8 +14,8 @@ paths:
   logs_dir: logs
 
 crawler:
-  global_concurrency: 64
-  per_domain_concurrency: 3
+  global_concurrency: 48
+  per_domain_concurrency: 2
   extraction_workers: 0
   connect_timeout_seconds: 7
   total_timeout_seconds: 30
@@ -23,7 +23,7 @@ crawler:
   max_redirects: 10
   max_html_bytes: 5242880
   max_pdf_bytes: 26214400
-  user_agent: "ViBioMIRResearchCrawler/1.0 (+https://huggingface.co/datasets/AIGuruTinix/ViBioMIR)"
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
   retry_base_seconds: 1.0
   robots_cache_seconds: 86400
   robots_timeout_seconds: 10

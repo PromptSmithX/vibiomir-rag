@@ -73,6 +73,8 @@ class RobotsCache:
                     return RobotsRule(None, time.monotonic() + self.ttl_seconds)
                 if response.status in {401, 403}:
                     return RobotsRule(None, time.monotonic() + self.ttl_seconds, deny_all=True)
+                if response.status in {520, 521, 522, 523, 524, 525, 526}:
+                    return RobotsRule(None, time.monotonic() + 3600)
                 if response.status >= 500:
                     raise RobotsUnavailable(f"robots.txt returned HTTP {response.status}")
                 raw = await response.content.read(1024 * 1024 + 1)

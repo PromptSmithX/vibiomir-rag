@@ -1,0 +1,79 @@
+# ==============================================================================
+# ViBioMIR Experiment: a1_docs100_chunks50
+# High recall document exploration: top 100 documents + top 50 chunks per query
+# ==============================================================================
+
+experiment_id: a1_docs100_chunks50
+description: "Experiment A1.1 (High Recall): Top 100 documents + Top 50 chunks for maximizing candidate document coverage"
+
+chunking:
+  strategy: sentence_aware
+  target_tokens: 400
+  max_total_tokens: 512
+  overlap_tokens: 48
+  include_document_title: true
+  include_heading_if_available: true
+  max_title_tokens: 64
+  special_tokens_reserve: 4
+  chunking_version: a1
+
+model:
+  model_id: "Qwen/Qwen3-Embedding-0.6B"
+  local_model_path: "models/Qwen3-Embedding-0.6B"
+  offline_mode: false
+  device: "cuda"
+  precision: "float16"
+  batch_size: 16
+  max_length: 512
+  query_instruction: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
+  pooling_method: "last_token"
+  normalize: true
+
+index:
+  index_type: "flat_ip"
+  use_faiss: true
+  metric: "cosine"
+
+retrieval:
+  dense_chunk_top_k: 500
+  document_aggregation: "max"
+  top_k_docs: 1000
+  export_chunk_hits: true
+
+fusion:
+  rrf_k: 60
+  bm25_weight: 1.0
+  dense_weight: 1.0
+  top_k: 1000
+
+paths:
+  candidate_doc_ids: "data/retrieval/candidates/candidate_doc_ids.parquet"
+  bm25_hits: "data/retrieval/candidates/retrieval_top_1000.parquet"
+  queries: "data/source/query.parquet"
+  output_dir: "data/experiments/a1_docs100_chunks50"
+  fusion_hits: "data/experiments/exp_a1/fusion/rrf_fusion_top_1000.parquet"
+  dense_hits: "data/experiments/exp_a1/retrieval/dense_retrieval_top_1000.parquet"
+  chunks_dir: "data/experiments/exp_a1/chunks"
+  index_dir: "data/experiments/exp_a1/index"
+
+submission:
+  top_docs: 100
+  top_chunks: 50
+  chunks_per_doc: 3
+  include_chunk_order: false
+  doc_id_type: int
+  output_filename: "submission.json"
+  zip_filename: "submission.zip"
+  output_dir: "data/experiments/a1_docs100_chunks50/submission"
+
+chunk_selection:
+  top_k: 50
+  max_chunks_per_document: 3
+  deduplicate: true
+  dedup_threshold: 0.85
+  preserve_original_text: true
+  filter_boilerplate: true
+  min_chunk_chars: 30
+  passage_expansion:
+    enabled: false
+    max_tokens: 1024

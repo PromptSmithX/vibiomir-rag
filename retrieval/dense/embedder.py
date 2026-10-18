@@ -119,6 +119,8 @@ class DenseEmbedder:
 
                     if self.config.pooling_method == "mean":
                         pooled = mean_pool(last_hidden, attention_mask)
+                    elif self.config.pooling_method in ("cls", "first_token"):
+                        pooled = last_hidden[:, 0]
                     else:
                         pooled = last_token_pool(last_hidden, attention_mask)
 

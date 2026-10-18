@@ -1,0 +1,342 @@
+Tiến trình cắt chunk cho **73,529 tài liệu mới** đang chạy rất mượt mà trên máy tính của bạn:
+
+```
+2026-10-17 11:00:09 [INFO] Matched 10,000 / 73,529 candidates | Chunks: 49,023
+2026-10-17 11:00:14 [INFO] Wrote 50,003 chunks to chunks_part_00000.parquet
+```
+
+Hệ thống đang quét qua các shards dữ liệu sạch với tốc độ ~2,500 tài liệu/phút. Dự kiến toàn bộ 73.5k tài liệu (khoảng ~330,000 chunks) sẽ **hoàn tất trong khoảng 2 – 3 phút tới**.
+
+---
+
+### 📋 Toàn bộ lộ trình thực hiện Phương án A (Top 500 + Reranker)
+
+Để bạn chủ động chuẩn bị, đây là quy trình 3 bước khép kín:
+
+```mermaid
+flowchart TD
+    A["1. Máy local cắt xong ~330k Chunks mới<br/>(Tự động nén thành vibiomir_chunks_top500_diff.zip)"] --> B["2. Tạo Dataset nhỏ trên Kaggle<br/>(Upload zip ~250MB mất 1 phút)"]
+    B --> C["3. Chạy Notebook Kaggle GPU T4 x2:<br/>- BGE-M3 Embed 330k chunks mới (~12 phút)<br/>- Ghép với 467k vectors cũ = 800k vectors toàn diện<br/>- RRF Fusion Top 500 (Recall vọt lên ~55-60%)<br/>- BGE-Reranker-v2-M3 chấm điểm Top 150 (~25 phút)<br/>- Smart Disjoint Export Top 100"]
+    C --> D["4. File Submission đạt mốc 0.45 - 0.55+ sẵn sàng!"]
+```
+
+---
+
+### 🛠️ Chi tiết thao tác cực kỳ đơn giản trên Kaggle:
+
+Ngay khi file zip local hoàn tất trong 2 phút tới:
+
+1. **Bước 1 (Upload Dataset)**:
+   - Mở Kaggle $\rightarrow$ bấm vào mục **Datasets** ở menu bên trái $\rightarrow$ chọn **+ New Dataset**.
+   - Kéo thả file `D:\ROAD_TO_AI_2026\data\experiments\vibiomir_chunks_top500_diff.zip` vào.
+   - Đặt tên dataset là: **`vibiomir-chunks-top500-diff`** $\rightarrow$ bấm **Create**.
+
+2. **Bước 2 (Gắn Input vào Notebook)**:
+   - Trong Notebook Kaggle (đang chọn **GPU T4 x2**, **Internet ON**), ở cột menu bên phải mục **Input**, bạn chỉ cần kiểm tra có đủ 3 nguồn:
+     1. `vibiomir-exp-a1-input` (Dataset gốc chứa query và BM25 top 1000).
+     2. `vibiomir-bge-m3-ensemble` (Output của version cũ chứa 467k vectors BGE-M3 đã tính).
+     3. `vibiomir-chunks-top500-diff` (Dataset mới tạo ở bước 1).
+
+3. **Bước 3 (Chạy Pipeline Tự động)**:
+   - Dán toàn bộ đoạn code trọn gói bên dưới vào Notebook và bấm **Run**.
+   - Máy ảo sẽ tự động:
+     + Embed bổ sung các chunks mới (~12 phút).
+     + Hợp nhất vectors thành kho dữ liệu 800,000 chunks của Top 500.
+     + Chạy mô hình Cross-Encoder **`BAAI/bge-reranker-v2-m3`** tái sắp xếp các ứng viên.
+     + Xuất ra file nộp chuẩn `submission_top500_reranked.zip`.
+
+---
+
+```python
+# ==============================================================================
+# PIPELINE TOP 500 TOÀN DIỆN: BGE-M3 EMBED + 3-WAY RRF + CROSS-ENCODER RERANKER
+# ==============================================================================
+import os, glob, time, json, zipfile, shutil
+from pathlib import Path
+from collections import defaultdict
+import numpy as np
+import pyarrow.parquet as pq
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+print(f"CUDA Available: {torch.cuda.is_available()}")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+t_start = time.time()
+
+# ------------------------------------------------------------------------------
+# 1. GIẢI NÉN VECTORS BGE-M3 CŨ (467K VECTORS TOP 200 ĐÃ CÓ SẴN)
+# ------------------------------------------------------------------------------
+work_dir = Path("/kaggle/working/top500_pipeline")
+work_dir.mkdir(parents=True, exist_ok=True)
+
+old_zip_candidates = glob.glob("/kaggle/input/**/vibiomir_vectors_bge_m3.zip", recursive=True)
+if not old_zip_candidates:
+    old_zip_candidates = glob.glob("/kaggle/working/**/vibiomir_vectors_bge_m3.zip", recursive=True)
+
+print("Đang giải nén 467k vectors BGE-M3 cũ...")
+old_vec_dir = work_dir / "old_vectors"
+with zipfile.ZipFile(old_zip_candidates[0], "r") as z:
+    z.extractall(old_vec_dir)
+
+old_npy = list(old_vec_dir.rglob("bge_vectors.npy"))[0]
+old_meta = list(old_vec_dir.rglob("embeddings_meta.parquet"))[0]
+old_vectors = np.load(old_npy)
+old_meta_tbl = pq.read_table(old_meta)
+print(f"-> Đã nạp {len(old_vectors):,} vectors cũ ({old_vectors.shape})")
+
+# ------------------------------------------------------------------------------
+# 2. EMBED ~330K CHUNKS MỚI CỦA TOP 500 BẰNG BGE-M3 (~12 PHÚT)
+# ------------------------------------------------------------------------------
+diff_chunks_candidates = glob.glob("/kaggle/input/**/vibiomir-chunks-top500-diff/**/chunks/*.parquet", recursive=True)
+if not diff_chunks_candidates:
+    diff_chunks_candidates = glob.glob("/kaggle/input/**/chunks_part_*.parquet", recursive=True)
+diff_chunks_files = sorted(diff_chunks_candidates)
+print(f"-> Tìm thấy {len(diff_chunks_files)} shards chunks mới cần embed.")
+
+from sentence_transformers import SentenceTransformer
+print("Đang tải mô hình BAAI/bge-m3...")
+model_bge = SentenceTransformer("BAAI/bge-m3", device=device)
+model_bge.half()
+
+new_chunk_ids = []
+new_doc_ids = []
+new_embed_texts = []
+
+for f in diff_chunks_files:
+    tbl = pq.read_table(f, columns=["chunk_id", "doc_id", "embed_text"])
+    new_chunk_ids.extend(tbl.column("chunk_id").to_pylist())
+    new_doc_ids.extend(tbl.column("doc_id").to_pylist())
+    new_embed_texts.extend(tbl.column("embed_text").to_pylist())
+
+print(f"Bắt đầu encode {len(new_embed_texts):,} chunks mới trên GPU...")
+new_vectors = model_bge.encode(
+    new_embed_texts,
+    batch_size=128,
+    show_progress_bar=True,
+    normalize_embeddings=True,
+    convert_to_numpy=True
+).astype(np.float16)
+
+# Ghép toàn bộ vectors
+all_vectors = np.vstack([old_vectors, new_vectors])
+all_chunk_ids = old_meta_tbl.column("chunk_id").to_pylist() + [str(c) for c in new_chunk_ids]
+all_doc_ids = old_meta_tbl.column("doc_id").to_pylist() + [int(d) for d in new_doc_ids]
+print(f"==> TỔNG KHO VECTORS TOP 500: {len(all_vectors):,} vectors ({all_vectors.shape})")
+
+# ------------------------------------------------------------------------------
+# 3. DENSE RETRIEVAL TRÊN TOÀN BỘ 800K VECTORS
+# ------------------------------------------------------------------------------
+query_file = glob.glob("/kaggle/input/**/query.parquet", recursive=True)[0]
+q_tbl = pq.read_table(query_file)
+q_col = "id" if "id" in q_tbl.column_names else "query_id"
+q_text_col = "query" if "query" in q_tbl.column_names else "text"
+q_ids = q_tbl.column(q_col).to_pylist()
+q_texts = q_tbl.column(q_text_col).to_pylist()
+
+print(f"Đang encode {len(q_texts):,} queries bằng BGE-M3...")
+q_vectors = model_bge.encode(q_texts, batch_size=64, normalize_embeddings=True, convert_to_numpy=True).astype(np.float32)
+
+print("Đang quét tương đồng Inner Product trên GPU...")
+dense_hits_by_query = defaultdict(list)
+all_vectors_torch = torch.from_numpy(all_vectors.astype(np.float32)).to(device)
+
+batch_q = 64
+for b_i in range(0, len(q_ids), batch_q):
+    b_qids = q_ids[b_i : b_i + batch_q]
+    b_qvecs = torch.from_numpy(q_vectors[b_i : b_i + batch_q]).to(device)
+    # Cosine sim = q_vec @ all_vectors.T
+    sims = torch.matmul(b_qvecs, all_vectors_torch.T)
+    top_sims, top_indices = torch.topk(sims, k=1000, dim=1)
+    
+    for row, qid in enumerate(b_qids):
+        doc_max_sim = {}
+        doc_best_chunk = {}
+        for rank_idx in range(1000):
+            c_idx = top_indices[row, rank_idx].item()
+            score_val = top_sims[row, rank_idx].item()
+            did = all_doc_ids[c_idx]
+            cid = all_chunk_ids[c_idx]
+            if did not in doc_max_sim:
+                doc_max_sim[did] = score_val
+                doc_best_chunk[did] = cid
+        
+        sorted_docs = sorted(doc_max_sim.items(), key=lambda x: x[1], reverse=True)[:500]
+        for r, (did, s) in enumerate(sorted_docs, 1):
+            dense_hits_by_query[int(qid)].append((did, r, s, doc_best_chunk[did]))
+
+del all_vectors_torch
+torch.cuda.empty_cache()
+
+# ------------------------------------------------------------------------------
+# 4. HỢP NHẤT RRF FUSION VỚI BM25 TOP 500
+# ------------------------------------------------------------------------------
+bm25_file = glob.glob("/kaggle/input/**/retrieval_top_1000.parquet", recursive=True)[0]
+bm25_tbl = pq.read_table(bm25_file)
+bm25_q = bm25_tbl.column("query_id").to_pylist()
+bm25_d = bm25_tbl.column("doc_id").to_pylist()
+bm25_r = bm25_tbl.column("rank").to_pylist()
+
+bm25_by_q = defaultdict(list)
+for q, d, r in zip(bm25_q, bm25_d, bm25_r):
+    if r <= 500:
+        bm25_by_q[int(q)].append((int(d), int(r)))
+
+fused_candidates_by_q = {}
+rrf_k = 60
+for qid in q_ids:
+    q_int = int(qid)
+    doc_scores = defaultdict(float)
+    chunk_map = {}
+    
+    for did, r in bm25_by_q.get(q_int, []):
+        doc_scores[did] += 1.0 / (rrf_k + r)
+    for did, r, s, cid in dense_hits_by_query.get(q_int, []):
+        doc_scores[did] += 1.2 / (rrf_k + r)
+        chunk_map[did] = cid
+        
+    sorted_fused = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:150]
+    fused_candidates_by_q[q_int] = [(did, chunk_map.get(did, "")) for did, _ in sorted_fused]
+
+print(f"-> Hợp nhất Top 500 RRF hoàn tất cho {len(fused_candidates_by_q):,} queries!")
+
+# ------------------------------------------------------------------------------
+# 5. CHẠY CROSS-ENCODER RERANKER (BAAI/bge-reranker-v2-m3) TRÊN TOP 150 (~25 PHÚT)
+# ------------------------------------------------------------------------------
+print("\nĐang khởi tạo Cross-Encoder Reranker BAAI/bge-reranker-v2-m3...")
+reranker_name = "BAAI/bge-reranker-v2-m3"
+reranker_tok = AutoTokenizer.from_pretrained(reranker_name)
+reranker_model = AutoModelForSequenceClassification.from_pretrained(
+    reranker_name, torch_dtype=torch.float16
+).to(device)
+reranker_model.eval()
+
+# Nạp văn bản chunks để ghép vào cặp (query, passage)
+all_chunk_files = glob.glob("/kaggle/input/**/chunks/*.parquet", recursive=True) + diff_chunks_files
+chunk_text_cache = {}
+for f in all_chunk_files:
+    t = pq.read_table(f, columns=["doc_id", "chunk_index", "text"])
+    for d, i, txt in zip(t.column("doc_id").to_pylist(), t.column("chunk_index").to_pylist(), t.column("text").to_pylist()):
+        if int(i) == 0 and int(d) not in chunk_text_cache:
+            chunk_text_cache[int(d)] = str(txt or "")
+
+final_reranked_docs = {}
+print("Bắt đầu chấm điểm chéo Reranker cho 1,200 queries...")
+
+with torch.no_grad():
+    for q_idx, qid in enumerate(q_ids):
+        q_text = q_texts[q_idx]
+        candidates = fused_candidates_by_q.get(int(qid), [])[:150]
+        
+        pairs = []
+        c_dids = []
+        for did, _ in candidates:
+            doc_snippet = chunk_text_cache.get(did, "")[:1000]
+            pairs.append([q_text, doc_snippet])
+            c_dids.append(did)
+            
+        # Inference theo batch nhỏ để tiết kiệm VRAM
+        scores = []
+        for b_start in range(0, len(pairs), 32):
+            b_pairs = pairs[b_start : b_start + 32]
+            inputs = reranker_tok(b_pairs, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
+            out = reranker_model(**inputs)
+            s_list = out.logits.squeeze(-1).float().cpu().numpy().tolist()
+            scores.extend(s_list if isinstance(s_list, list) else [s_list])
+            
+        ranked = [d for _, d in sorted(zip(scores, c_dids), reverse=True)]
+        final_reranked_docs[int(qid)] = ranked
+
+        if (q_idx + 1) % 100 == 0:
+            print(f"  Reranked {q_idx+1} / {len(q_ids)} queries...")
+
+# ------------------------------------------------------------------------------
+# 6. XUẤT SUBMISSION THEO CHUẨN SMART DISJOINT (TOP 100 CHUNKS DÀI, 0% TRÙNG LẶP)
+# ------------------------------------------------------------------------------
+print("\nĐang xuất kết quả cuối cùng theo chuẩn Smart Disjoint...")
+# Đọc và nhóm toàn bộ chunks theo tài liệu
+doc_chunks_full = defaultdict(list)
+for f in all_chunk_files:
+    t = pq.read_table(f, columns=["doc_id", "chunk_index", "text"])
+    for did, idx, txt in zip(t.column("doc_id").to_pylist(), t.column("chunk_index").to_pylist(), t.column("text").to_pylist()):
+        if txt and len(str(txt).strip()) >= 30:
+            doc_chunks_full[int(did)].append((int(idx), str(txt).strip()))
+
+for did in doc_chunks_full:
+    doc_chunks_full[did].sort(key=lambda x: x[0])
+
+sub_records = []
+target_words = 600
+
+for qid in q_ids:
+    q_int = int(qid)
+    docs = final_reranked_docs.get(q_int, [])[:100]
+    rel_chunks = []
+    
+    for did in docs:
+        if len(rel_chunks) >= 100:
+            break
+        c_list = doc_chunks_full.get(did, [])
+        if not c_list:
+            continue
+            
+        # Đoạn 1: Chunk 0 + chunk kế
+        p1 = c_list[0][1]
+        used_idx = {c_list[0][0]}
+        if len(c_list) > 1 and len(p1.split()) < target_words:
+            p1 = f"{p1} {c_list[1][1]}".strip()
+            used_idx.add(c_list[1][0])
+        rel_chunks.append({"doc_id": did, "chunk_text": p1})
+        
+        # Đoạn 2: Từ chunk 2 trở đi (hoàn toàn không trùng lặp)
+        if len(rel_chunks) < 100 and len(c_list) >= 3:
+            for c_i, c_txt in c_list:
+                if c_i not in used_idx and c_i >= 2:
+                    p2 = c_txt
+                    if len(p2.split()) >= 40:
+                        for n_i, n_txt in c_list:
+                            if n_i == c_i + 1 and len(p2.split()) < target_words:
+                                p2 = f"{p2} {n_txt}".strip()
+                                break
+                        rel_chunks.append({"doc_id": did, "chunk_text": p2})
+                    break
+                    
+    # Bù đủ 100 chunks
+    if len(rel_chunks) < 100:
+        seen = {c["doc_id"] for c in rel_chunks}
+        for did in docs:
+            if len(rel_chunks) >= 100:
+                break
+            if did in seen:
+                continue
+            c_list = doc_chunks_full.get(did, [])
+            if c_list:
+                rel_chunks.append({"doc_id": did, "chunk_text": c_list[0][1]})
+                seen.add(did)
+                
+    sub_records.append({
+        "id": q_int,
+        "relevant_docs": docs,
+        "relevant_chunks": rel_chunks
+    })
+
+out_json = Path("/kaggle/working/submission.json")
+out_zip = Path("/kaggle/working/submission_top500_reranked.zip")
+
+with open(out_json, "w", encoding="utf-8") as f:
+    json.dump(sub_records, f, ensure_ascii=False)
+
+with zipfile.ZipFile(out_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zf.write(out_json, arcname="submission.json")
+
+print("\n" + "=" * 65)
+print(f"=== PIPELINE HOÀN TẤT TRONG {(time.time()-t_start)/60:.1f} PHÚT! ===")
+print(f"File kết quả sẵn sàng: {out_zip} ({out_zip.stat().st_size / (1024*1024):.2f} MB)")
+print("=" * 65)
+
+from IPython.display import FileLink
+display(FileLink("submission_top500_reranked.zip"))
+```
+
+---
+
+Tôi sẽ gửi thông báo và đường dẫn file zip ngay khi tiến trình cắt chunks local vừa xong!

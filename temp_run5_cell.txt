@@ -1,0 +1,37 @@
+**Khoan bấm Save Version vội bạn ơi! Hãy kiểm tra nhanh 2 điểm cực kỳ quan trọng này trước (mất 30 giây) để đảm bảo không bị báo lỗi thiếu file:** ⚠️
+
+---
+
+### ⚠️ Điểm 1: Bạn đã thêm đủ 3 Input vào Notebook này chưa?
+
+Vì đây là Notebook mới tạo (`top 500 candidates`), nếu chưa thêm dữ liệu vào thì thư mục `/kaggle/input` đang trống, máy ảo sẽ báo lỗi không tìm thấy file ngay lập tức.
+
+Bạn nhìn sang **thanh công cụ màu đen ở mép ngoài cùng bên trái màn hình**, bấm vào **biểu tượng hình cái thùng dữ liệu (Database / đĩa tròn)**:
+Kiểm tra xem ở mục **Input** đã xuất hiện đủ 3 nguồn này chưa:
+1. `vibiomir-exp-a1-input` *(Chứa file đề bài `query.parquet` và `retrieval_top_1000.parquet`)*.
+2. Notebook cũ của bạn *(Chứa file `vibiomir_vectors_bge_m3.zip`)*.
+3. Dataset mới **`vibiomir-chunks-top500-diff`** *(Bạn đã tải file zip 259.5 MB ở máy local lên Kaggle chưa?)*.
+
+> [!IMPORTANT]
+> Nếu chưa có nguồn nào, bạn chỉ cần bấm nút **`+ Add Input`** ở góc trên bên phải để tìm và thêm vào là xong!
+
+---
+
+### ⚠️ Điểm 2: Thêm 1 dòng cài thư viện ở đầu Cell (Đảm bảo an toàn 100%)
+
+Để tránh máy ảo báo thiếu thư viện `sentence-transformers`, bạn hãy thêm dòng này vào **ngay đầu tiên của Cell**:
+
+```python
+!pip install -q sentence-transformers
+```
+
+---
+
+### 🎯 Cách bấm chạy chuẩn nhất để tắt máy đi nghỉ:
+
+Sau khi kiểm tra đủ 3 Input ở Điểm 1:
+1. Nhìn lên góc trên bên phải, bấm vào nút **`Save Version`**.
+2. Một bảng nhỏ hiện ra:
+   - Ở dòng *Version Type*: Chọn **Save & Run All (Commit)**.
+3. Bấm nút **`Save`**.
+4. Máy chủ Kaggle sẽ tự động nhận lệnh và chạy ngầm từ A đến Z trong khoảng **35 – 40 phút**. Bạn có thể **tắt trình duyệt, tắt máy tính đi ăn trưa hay nghỉ ngơi thoải mái**! Khi quay lại, toàn bộ kết quả nộp và kho 800k vectors sẽ nằm sẵn ở mục Output.
